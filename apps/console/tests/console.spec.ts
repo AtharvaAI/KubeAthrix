@@ -1,0 +1,118 @@
+import { expect, test, type Page } from "@playwright/test";
+
+const finding = {
+  id: "finding-public-rbac-image",
+  source: "correlator",
+  title: "Public workload combines broad RBAC, stale image, and missing network policy",
+  severity: "critical",
+  evidence: [
+    {
+      summary: "Public LoadBalancer exposure",
+      details: "checkout-api accepts ingress from 0.0.0.0/0.",
+      sourceId: "kubescape/network",
+      observedAt: "2026-07-08T12:00:00Z"
+    }
+  ],
+  resources: [{ apiVersion: "apps/v1", kind: "Deployment", namespace: "payments", name: "checkout-api" }],
+  blastRadius: "Internet-facing payment API with namespace secret visibility.",
+  fixability: "human_approved_only",
+  status: "open",
+  correlationGroup: "payments-checkout-exposure",
+  riskScore: 97,
+  remediationState: "approval_required",
+  recommendedAction: "Review network, RBAC, and image trust changes before rollout.",
+  createdAt: "2026-07-08T12:00:00Z",
+  updatedAt: "2026-07-08T12:00:00Z"
+};
+
+async function mockApi(page: Page) {
+  await page.route("**/api/dashboard", async (route) =>
+    route.fulfill({
+      json: {
+        totalFindings: 1,
+        openCritical: 1,
+        pendingApprovals: 1,
+        activeRemediations: 0,
+        meanRiskScore: 97,
+        findingsBySeverity: { critical: 1 },
+        findingsBySource: { correlator: 1 },
+        remediationByState: { approval_required: 1 },
+        protectedNamespaces: 1,
+        bundledEnginesOnline: 3
+      }
+    })
+  );
+  await page.route("**/api/findings", async (route) => route.fulfill({ json: { items: [finding] } }));
+  await page.route("**/api/audit-events", async (route) => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/integrations", async (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { name: "Trivy Operator", type: "scanner", enabled: true, status: "online" },
+          { name: "Kyverno", type: "policy", enabled: true, status: "online" },
+          { name: "Kubescape", type: "scanner", enabled: true, status: "online" }
+        ]
+      }
+    })
+  );
+  await page.route("**/api/settings/model-providers", async (route) =>
+    route.fulfill({
+      json: {
+        providers: [
+          {
+            name: "primary",
+            type: "openai-compatible",
+            model: "gpt-5",
+            apiKeySecretRef: { name: "kubeathrix-llm", key: "api-key" }
+          }
+        ]
+      }
+    })
+  );
+  await page.route("**/api/remediation-plans", async (route) =>
+    route.fulfill({
+      status: 201,
+      json: {
+        id: "plan-finding-public-rbac-image-001",
+        findingId: finding.id,
+        rootCause: "Structured plan generated from correlated scanner evidence.",
+        actions: [
+          {
+            type: "propose_security_hardening",
+            target: finding.resources[0],
+            description: finding.recommendedAction,
+            params: { dryRun: "required" }
+          }
+        ],
+        riskTier: "C",
+        dryRunResult: { passed: true, message: "dry-run queued" },
+        verificationSteps: ["Re-scan source engines"],
+        rollbackSteps: ["Restore pre-change snapshot"],
+        approvalPolicy: { required: true, categories: ["network", "iam"] },
+        status: "proposed",
+        createdAt: "2026-07-08T12:00:00Z"
+      }
+    })
+  );
+}
+
+test("dashboard and fix center are usable on desktop", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByText("Correlated cluster risk")).toBeVisible();
+  await page.getByRole("button", { name: /Findings/ }).click();
+  await page.getByRole("button", { name: /Generate typed plan/ }).click();
+  await expect(page.getByRole("heading", { name: "Fix Center" })).toBeVisible();
+  await expect(page.getByText("Find, explain, fix, verify, prove")).toBeVisible();
+});
+
+test("mobile layout keeps navigation and text accessible", async ({ page }) => {
+  await mockApi(page);
+  await page.setViewportSize({ width: 390, height: 840 });
+  await page.goto("/");
+  await expect(page.getByText("AI Kubernetes Defender")).toBeVisible();
+  await page.getByRole("button", { name: /Integrations/ }).click();
+  await expect(page.getByRole("heading", { name: "Integrations" })).toBeVisible();
+  await expect(page.getByText("Trivy Operator")).toBeVisible();
+});

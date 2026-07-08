@@ -1,0 +1,120 @@
+replicaCount:
+  api: 1
+  console: 1
+  operator: 1
+
+image:
+  api:
+    repository: docker.io/atharvaai/kubeathrix-api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  console:
+    repository: docker.io/atharvaai/kubeathrix-console
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  operator:
+    repository: docker.io/atharvaai/kubeathrix-operator
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  api:
+    port: 8080
+  console:
+    port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: kubeathrix.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+auth:
+  devAuthEnabled: true
+  oidc:
+    enabled: false
+    issuerURL: ""
+    clientID: ""
+    existingSecret: ""
+    clientSecretKey: client-secret
+
+postgres:
+  external: false
+  image: postgres:16-alpine
+  storageSize: 8Gi
+  host: ""
+  port: 5432
+  database: kubeathrix
+  username: kubeathrix
+  existingSecret: ""
+  passwordKey: password
+
+modelProviders:
+  - name: primary
+    type: openai-compatible
+    model: gpt-5
+    apiKeySecretRef:
+      name: kubeathrix-llm
+      key: api-key
+    externalSecretRef: null
+
+remediation:
+  mode: gated
+  requireApprovalFor:
+    - network
+    - iam
+    - secret-rotation
+    - admission-policy
+  neverAutonomous:
+    - destructive-delete
+    - broad-admission-rollout
+    - node-configuration
+
+engines:
+  trivyOperator:
+    enabled: true
+  kyverno:
+    enabled: true
+  kubescape:
+    enabled: true
+  falco:
+    enabled: false
+  tetragon:
+    enabled: false
+  chaosMesh:
+    enabled: false
+  litmus:
+    enabled: false
+
+notifications:
+  webhooks:
+    enabled: false
+  alertmanager:
+    enabled: false
+    url: ""
+  slack:
+    enabled: false
+    webhookSecretRef:
+      name: ""
+      key: url
+  email:
+    enabled: false
+  teams:
+    enabled: false
+  telegram:
+    enabled: false
+
+resources:
+  api: {}
+  console: {}
+  operator: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

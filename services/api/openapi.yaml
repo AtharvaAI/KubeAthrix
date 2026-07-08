@@ -1,0 +1,116 @@
+openapi: 3.1.0
+info:
+  title: KubeAthrix API
+  version: 0.1.0
+  summary: Production-shaped API for findings, approvals, typed remediations, and settings.
+servers:
+  - url: /api
+paths:
+  /health:
+    get:
+      summary: Health and auth mode
+      responses:
+        "200":
+          description: API is healthy
+  /dashboard:
+    get:
+      summary: Aggregated risk and remediation dashboard
+      responses:
+        "200":
+          description: Dashboard metrics
+  /findings:
+    get:
+      summary: List normalized findings
+      parameters:
+        - in: query
+          name: severity
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: source
+          schema: { type: string }
+        - in: query
+          name: q
+          schema: { type: string }
+      responses:
+        "200":
+          description: Finding list
+  /findings/{id}:
+    get:
+      summary: Get finding detail
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Finding detail
+        "404":
+          description: Finding not found
+  /remediation-plans:
+    post:
+      summary: Create a typed remediation plan
+      description: The API creates typed actions only; no arbitrary shell or kubectl text is accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [findingId]
+              properties:
+                findingId: { type: string }
+                requestedBy: { type: string }
+      responses:
+        "201":
+          description: Plan created
+  /remediation-runs/{id}:
+    get:
+      summary: Read remediation run state
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Remediation run
+  /approvals/{id}/approve:
+    post:
+      summary: Approve a gated action
+      responses:
+        "200":
+          description: Approval recorded
+  /approvals/{id}/reject:
+    post:
+      summary: Reject a gated action
+      responses:
+        "200":
+          description: Rejection recorded
+  /audit-events:
+    get:
+      summary: List audit events
+      responses:
+        "200":
+          description: Audit event list
+  /integrations:
+    get:
+      summary: List engine and notification integrations
+      responses:
+        "200":
+          description: Integration list
+  /settings/model-providers:
+    get:
+      summary: Get model provider references
+      responses:
+        "200":
+          description: Provider settings
+    put:
+      summary: Replace model provider references
+      description: Raw API keys are intentionally not part of this schema.
+      responses:
+        "200":
+          description: Provider settings updated

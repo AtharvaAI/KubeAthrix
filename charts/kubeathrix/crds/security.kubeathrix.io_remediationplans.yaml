@@ -1,0 +1,130 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: remediationplans.security.kubeathrix.io
+spec:
+  group: security.kubeathrix.io
+  scope: Namespaced
+  names:
+    plural: remediationplans
+    singular: remediationplan
+    kind: RemediationPlan
+    shortNames:
+      - kxplan
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Finding
+          type: string
+          jsonPath: .spec.findingRef.name
+        - name: Risk
+          type: string
+          jsonPath: .spec.riskTier
+        - name: Approval
+          type: boolean
+          jsonPath: .spec.approvalPolicy.required
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - findingRef
+                - rootCause
+                - actions
+                - riskTier
+                - dryRunResult
+                - verificationSteps
+                - rollbackSteps
+                - approvalPolicy
+              properties:
+                findingRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                rootCause:
+                  type: string
+                actions:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: ["type", "target", "description"]
+                    properties:
+                      type:
+                        type: string
+                        pattern: "^[a-z0-9_]+$"
+                      target:
+                        type: object
+                        required: ["apiVersion", "kind", "name"]
+                        properties:
+                          apiVersion:
+                            type: string
+                          kind:
+                            type: string
+                          namespace:
+                            type: string
+                          name:
+                            type: string
+                      description:
+                        type: string
+                      params:
+                        type: object
+                        additionalProperties:
+                          type: string
+                riskTier:
+                  type: string
+                  enum: ["A", "B", "C", "D"]
+                dryRunResult:
+                  type: object
+                  required: ["passed", "message"]
+                  properties:
+                    passed:
+                      type: boolean
+                    message:
+                      type: string
+                verificationSteps:
+                  type: array
+                  items:
+                    type: string
+                rollbackSteps:
+                  type: array
+                  items:
+                    type: string
+                approvalPolicy:
+                  type: object
+                  required: ["required"]
+                  properties:
+                    required:
+                      type: boolean
+                    categories:
+                      type: array
+                      items:
+                        type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                lastTransitionTime:
+                  type: string
+                  format: date-time
+                message:
+                  type: string
+      subresources:
+        status: {}

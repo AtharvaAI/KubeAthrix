@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-operator
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.operator }}
+  selector:
+    matchLabels:
+      {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        {{- include "kubeathrix.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ include "kubeathrix.fullname" . }}-operator
+      containers:
+        - name: manager
+          image: "{{ .Values.image.operator.repository }}:{{ .Values.image.operator.tag }}"
+          imagePullPolicy: {{ .Values.image.operator.pullPolicy }}
+          args:
+            - --health-probe-bind-address=:8081
+            - --leader-elect
+          ports:
+            - name: probes
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+          resources:
+            {{- toYaml .Values.resources.operator | nindent 12 }}

@@ -1,0 +1,11 @@
+KubeAthrix has been installed.
+
+Access the internal console with:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kubeathrix.fullname" . }}-console 8080:{{ .Values.service.console.port }}
+
+Access the API with:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kubeathrix.fullname" . }}-api 8081:{{ .Values.service.api.port }}
+
+Core engines are controlled by values under engines.trivyOperator, engines.kyverno, and engines.kubescape.

@@ -1,0 +1,120 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: findings.security.kubeathrix.io
+spec:
+  group: security.kubeathrix.io
+  scope: Namespaced
+  names:
+    plural: findings
+    singular: finding
+    kind: Finding
+    shortNames:
+      - kxf
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Severity
+          type: string
+          jsonPath: .spec.severity
+        - name: Source
+          type: string
+          jsonPath: .spec.source
+        - name: Fixability
+          type: string
+          jsonPath: .spec.fixability
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - source
+                - title
+                - severity
+                - evidence
+                - resources
+                - blastRadius
+                - fixability
+                - findingStatus
+                - correlationGroup
+                - riskScore
+                - remediationState
+              properties:
+                source:
+                  type: string
+                  minLength: 1
+                title:
+                  type: string
+                  minLength: 1
+                severity:
+                  type: string
+                  enum: ["critical", "high", "medium", "low", "info"]
+                evidence:
+                  type: array
+                  items:
+                    type: object
+                    required: ["summary", "sourceId", "observedAt"]
+                    properties:
+                      summary:
+                        type: string
+                      details:
+                        type: string
+                      sourceId:
+                        type: string
+                      observedAt:
+                        type: string
+                        format: date-time
+                resources:
+                  type: array
+                  items:
+                    type: object
+                    required: ["apiVersion", "kind", "name"]
+                    properties:
+                      apiVersion:
+                        type: string
+                      kind:
+                        type: string
+                      namespace:
+                        type: string
+                      name:
+                        type: string
+                blastRadius:
+                  type: string
+                fixability:
+                  type: string
+                  enum: ["safe_deterministic", "dry_run_then_gated", "human_approved_only", "informational_no_fix"]
+                findingStatus:
+                  type: string
+                  enum: ["open", "in_review", "remediating", "resolved", "suppressed"]
+                correlationGroup:
+                  type: string
+                riskScore:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                remediationState:
+                  type: string
+                recommendedAction:
+                  type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                lastTransitionTime:
+                  type: string
+                  format: date-time
+      subresources:
+        status: {}

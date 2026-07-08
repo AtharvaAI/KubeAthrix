@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-config
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+data:
+  remediation-mode: {{ .Values.remediation.mode | quote }}
+  require-approval-for: {{ join "," .Values.remediation.requireApprovalFor | quote }}
+  never-autonomous: {{ join "," .Values.remediation.neverAutonomous | quote }}
+  model-providers.json: |
+    {{- toJson .Values.modelProviders | nindent 4 }}
+  adapters.json: |
+    {{- toJson .Values.engines | nindent 4 }}

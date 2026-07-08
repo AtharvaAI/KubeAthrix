@@ -1,0 +1,25 @@
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+
+# Go
+bin/
+*.test
+*.out
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Kubernetes/Helm
+charts/**/charts/
+
+# Runtime scratch
+tmp/

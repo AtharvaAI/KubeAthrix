@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-api
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.api }}
+  selector:
+    matchLabels:
+      {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "kubeathrix.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: {{ include "kubeathrix.fullname" . }}-api
+      containers:
+        - name: api
+          image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
+          imagePullPolicy: {{ .Values.image.api.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubeathrix.postgresSecretName" . }}
+                  key: {{ .Values.postgres.passwordKey }}
+            - name: DATABASE_URL
+              value: {{ include "kubeathrix.databaseURL" . | quote }}
+            - name: KUBEATHRIX_DEV_AUTH
+              value: {{ .Values.auth.devAuthEnabled | quote }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.auth.oidc.issuerURL | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.auth.oidc.clientID | quote }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+          resources:
+            {{- toYaml .Values.resources.api | nindent 12 }}

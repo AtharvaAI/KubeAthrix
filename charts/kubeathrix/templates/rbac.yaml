@@ -1,0 +1,72 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-reader
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "services", "events", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["security.kubeathrix.io"]
+    resources: ["findings", "remediationplans", "approvalrequests", "remediationruns", "exceptions"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-operator
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["security.kubeathrix.io"]
+    resources: ["findings", "remediationplans", "approvalrequests", "remediationruns", "exceptions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["security.kubeathrix.io"]
+    resources: ["findings/status", "remediationplans/status", "approvalrequests/status", "remediationruns/status", "exceptions/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["security.kubeathrix.io"]
+    resources: ["findings/finalizers", "remediationplans/finalizers", "approvalrequests/finalizers", "remediationruns/finalizers", "exceptions/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-api-reader
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubeathrix.fullname" . }}-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubeathrix.fullname" . }}-api
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-operator
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubeathrix.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubeathrix.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}

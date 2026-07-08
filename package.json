@@ -1,0 +1,15 @@
+{
+  "name": "kubeathrix",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Kubernetes-native AI defender and reliability control plane.",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:go": "go test ./services/api/... ./operator/...",
+    "helm:lint": "helm lint charts/kubeathrix"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
