@@ -5,16 +5,16 @@ replicaCount:
 
 image:
   api:
-    repository: docker.io/atharvaai/kubeathrix-api
-    tag: "0.1.0"
+    repository: docker.io/prashantdey/kubeathrix
+    tag: "api-0.1.0" # x-release-please-version
     pullPolicy: IfNotPresent
   console:
-    repository: docker.io/atharvaai/kubeathrix-console
-    tag: "0.1.0"
+    repository: docker.io/prashantdey/kubeathrix
+    tag: "console-0.1.0" # x-release-please-version
     pullPolicy: IfNotPresent
   operator:
-    repository: docker.io/atharvaai/kubeathrix-operator
-    tag: "0.1.0"
+    repository: docker.io/prashantdey/kubeathrix
+    tag: "operator-0.1.0" # x-release-please-version
     pullPolicy: IfNotPresent
 
 service:
@@ -23,6 +23,10 @@ service:
     port: 8080
   console:
     port: 80
+
+api:
+  clusterInspector:
+    enabled: true
 
 ingress:
   enabled: false
@@ -47,6 +51,7 @@ auth:
 postgres:
   external: false
   image: postgres:16-alpine
+  storageClassName: gp2
   storageSize: 8Gi
   host: ""
   port: 5432
@@ -91,6 +96,15 @@ engines:
     enabled: false
   litmus:
     enabled: false
+
+chaos:
+  execution:
+    enabled: false
+
+kyverno:
+  crds:
+    migration:
+      enabled: false
 
 notifications:
   webhooks:

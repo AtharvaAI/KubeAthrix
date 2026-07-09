@@ -49,6 +49,80 @@ export interface Dashboard {
   remediationByState: Record<string, number>;
   protectedNamespaces: number;
   bundledEnginesOnline: number;
+  cluster: ClusterInventory;
+  scan: ScanSummary;
+  compliance: ComplianceControl[];
+  experiments: ChaosExperiment[];
+}
+
+export interface ClusterInventory {
+  nodes: number;
+  readyNodes: number;
+  namespaces: number;
+  pods: number;
+  runningPods: number;
+  pendingPods: number;
+  deployments: number;
+  statefulSets: number;
+  daemonSets: number;
+  services: number;
+  ingresses: number;
+  jobs: number;
+  configMaps: number;
+  secrets: number;
+  serviceAccounts: number;
+  roles: number;
+  roleBindings: number;
+  clusterRoles: number;
+  clusterRoleBindings: number;
+  networkPolicies: number;
+  resourceQuotas: number;
+  limitRanges: number;
+  persistentVolumeClaims: number;
+  podDisruptionBudgets: number;
+  horizontalPodAutoscalers: number;
+  events: number;
+}
+
+export interface ScanSummary {
+  lastRunAt: string;
+  resourcesScanned: number;
+  policyChecks: number;
+  permissionChecks: number;
+  configurationChecks: number;
+  complianceControls: number;
+  passedControls: number;
+  failedControls: number;
+}
+
+export interface ComplianceControl {
+  id: string;
+  framework: string;
+  title: string;
+  status: "pass" | "fail" | string;
+  severity: Severity;
+  evidence: string;
+}
+
+export interface ChaosExperiment {
+  id: string;
+  name: string;
+  category: string;
+  target: string;
+  status: string;
+  engine: string;
+  description: string;
+  preflight: string[];
+  manifest: string;
+}
+
+export interface ChaosExperimentRun {
+  id: string;
+  experimentId: string;
+  status: string;
+  message: string;
+  manifest: string;
+  createdAt: string;
 }
 
 export interface TypedAction {
@@ -76,6 +150,19 @@ export interface RemediationPlan {
   };
   status: string;
   createdAt: string;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  subjectRef: string;
+  requestedAction: string;
+  requester: string;
+  approver?: string;
+  status: "pending" | "approved" | "rejected" | "expired";
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+  decisionReason?: string;
 }
 
 export interface AuditEvent {

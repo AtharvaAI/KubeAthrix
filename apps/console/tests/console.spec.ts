@@ -38,7 +38,68 @@ async function mockApi(page: Page) {
         findingsBySource: { correlator: 1 },
         remediationByState: { approval_required: 1 },
         protectedNamespaces: 1,
-        bundledEnginesOnline: 3
+        bundledEnginesOnline: 3,
+        cluster: {
+          nodes: 2,
+          readyNodes: 2,
+          namespaces: 3,
+          pods: 8,
+          runningPods: 7,
+          pendingPods: 1,
+          deployments: 2,
+          statefulSets: 0,
+          daemonSets: 2,
+          services: 3,
+          ingresses: 1,
+          jobs: 0,
+          configMaps: 8,
+          secrets: 6,
+          serviceAccounts: 5,
+          roles: 2,
+          roleBindings: 2,
+          clusterRoles: 12,
+          clusterRoleBindings: 6,
+          networkPolicies: 1,
+          resourceQuotas: 1,
+          limitRanges: 1,
+          persistentVolumeClaims: 0,
+          podDisruptionBudgets: 1,
+          horizontalPodAutoscalers: 1,
+          events: 12
+        },
+        scan: {
+          lastRunAt: "2026-07-08T12:00:00Z",
+          resourcesScanned: 76,
+          policyChecks: 8,
+          permissionChecks: 22,
+          configurationChecks: 18,
+          complianceControls: 2,
+          passedControls: 1,
+          failedControls: 1
+        },
+        compliance: [
+          {
+            id: "KA-K8S-010",
+            framework: "Traffic exposure",
+            title: "Ingress and Service exposure are explicitly controlled",
+            status: "fail",
+            severity: "high",
+            evidence: "External traffic paths should be reviewed and encrypted."
+          }
+        ],
+        experiments: [
+          {
+            id: "pod-delete-resilience",
+            name: "Pod delete resilience",
+            category: "availability",
+            target: "Deployment pods",
+            status: "ready",
+            engine: "litmus",
+            description: "Deletes one matching pod and verifies recovery.",
+            preflight: ["Target deployment has at least two replicas."],
+            manifest: "apiVersion: litmuschaos.io/v1alpha1\nkind: ChaosEngine\nmetadata:\n  name: kubeathrix-pod-delete\n  namespace: default"
+          }
+        ]
       }
     })
   );
@@ -64,6 +125,25 @@ async function mockApi(page: Page) {
             type: "openai-compatible",
             model: "gpt-5",
             apiKeySecretRef: { name: "kubeathrix-llm", key: "api-key" }
+          }
+        ]
+      }
+    })
+  );
+  await page.route("**/api/experiments", async (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: "pod-delete-resilience",
+            name: "Pod delete resilience",
+            category: "availability",
+            target: "Deployment pods",
+            status: "ready",
+            engine: "litmus",
+            description: "Deletes one matching pod and verifies recovery.",
+            preflight: ["Target deployment has at least two replicas."],
+            manifest: "apiVersion: litmuschaos.io/v1alpha1\nkind: ChaosEngine\nmetadata:\n  name: kubeathrix-pod-delete\n  namespace: default"
           }
         ]
       }

@@ -100,16 +100,98 @@ type Finding struct {
 }
 
 type Dashboard struct {
-	TotalFindings        int            `json:"totalFindings"`
-	OpenCritical         int            `json:"openCritical"`
-	PendingApprovals     int            `json:"pendingApprovals"`
-	ActiveRemediations   int            `json:"activeRemediations"`
-	MeanRiskScore        float64        `json:"meanRiskScore"`
-	FindingsBySeverity   map[string]int `json:"findingsBySeverity"`
-	FindingsBySource     map[string]int `json:"findingsBySource"`
-	RemediationByState   map[string]int `json:"remediationByState"`
-	ProtectedNamespaces  int            `json:"protectedNamespaces"`
-	BundledEnginesOnline int            `json:"bundledEnginesOnline"`
+	TotalFindings        int                 `json:"totalFindings"`
+	OpenCritical         int                 `json:"openCritical"`
+	PendingApprovals     int                 `json:"pendingApprovals"`
+	ActiveRemediations   int                 `json:"activeRemediations"`
+	MeanRiskScore        float64             `json:"meanRiskScore"`
+	FindingsBySeverity   map[string]int      `json:"findingsBySeverity"`
+	FindingsBySource     map[string]int      `json:"findingsBySource"`
+	RemediationByState   map[string]int      `json:"remediationByState"`
+	ProtectedNamespaces  int                 `json:"protectedNamespaces"`
+	BundledEnginesOnline int                 `json:"bundledEnginesOnline"`
+	Cluster              ClusterInventory    `json:"cluster"`
+	Scan                 ScanSummary         `json:"scan"`
+	Compliance           []ComplianceControl `json:"compliance"`
+	Experiments          []ChaosExperiment   `json:"experiments"`
+}
+
+type ClusterInventory struct {
+	Nodes                    int `json:"nodes"`
+	ReadyNodes               int `json:"readyNodes"`
+	Namespaces               int `json:"namespaces"`
+	Pods                     int `json:"pods"`
+	RunningPods              int `json:"runningPods"`
+	PendingPods              int `json:"pendingPods"`
+	Deployments              int `json:"deployments"`
+	StatefulSets             int `json:"statefulSets"`
+	DaemonSets               int `json:"daemonSets"`
+	Services                 int `json:"services"`
+	Ingresses                int `json:"ingresses"`
+	Jobs                     int `json:"jobs"`
+	ConfigMaps               int `json:"configMaps"`
+	Secrets                  int `json:"secrets"`
+	ServiceAccounts          int `json:"serviceAccounts"`
+	Roles                    int `json:"roles"`
+	RoleBindings             int `json:"roleBindings"`
+	ClusterRoles             int `json:"clusterRoles"`
+	ClusterRoleBindings      int `json:"clusterRoleBindings"`
+	NetworkPolicies          int `json:"networkPolicies"`
+	ResourceQuotas           int `json:"resourceQuotas"`
+	LimitRanges              int `json:"limitRanges"`
+	PersistentVolumeClaims   int `json:"persistentVolumeClaims"`
+	PodDisruptionBudgets     int `json:"podDisruptionBudgets"`
+	HorizontalPodAutoscalers int `json:"horizontalPodAutoscalers"`
+	Events                   int `json:"events"`
+}
+
+type ScanSummary struct {
+	LastRunAt           time.Time `json:"lastRunAt"`
+	ResourcesScanned    int       `json:"resourcesScanned"`
+	PolicyChecks        int       `json:"policyChecks"`
+	PermissionChecks    int       `json:"permissionChecks"`
+	ConfigurationChecks int       `json:"configurationChecks"`
+	ComplianceControls  int       `json:"complianceControls"`
+	PassedControls      int       `json:"passedControls"`
+	FailedControls      int       `json:"failedControls"`
+}
+
+type ComplianceControl struct {
+	ID        string   `json:"id"`
+	Framework string   `json:"framework"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Severity  Severity `json:"severity"`
+	Evidence  string   `json:"evidence"`
+}
+
+type ChaosExperiment struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Category    string   `json:"category"`
+	Target      string   `json:"target"`
+	Status      string   `json:"status"`
+	Engine      string   `json:"engine"`
+	Description string   `json:"description"`
+	Preflight   []string `json:"preflight"`
+	Manifest    string   `json:"manifest"`
+}
+
+type ChaosExperimentRun struct {
+	ID           string    `json:"id"`
+	ExperimentID string    `json:"experimentId"`
+	Status       string    `json:"status"`
+	Message      string    `json:"message"`
+	Manifest     string    `json:"manifest"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type ClusterSnapshot struct {
+	Inventory   ClusterInventory    `json:"inventory"`
+	Findings    []Finding           `json:"findings"`
+	Scan        ScanSummary         `json:"scan"`
+	Compliance  []ComplianceControl `json:"compliance"`
+	Experiments []ChaosExperiment   `json:"experiments"`
 }
 
 type TypedAction struct {

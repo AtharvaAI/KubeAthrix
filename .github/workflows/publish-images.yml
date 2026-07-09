@@ -1,0 +1,139 @@
+name: Publish Docker Images
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, for example 0.1.0 or v0.1.0"
+        required: true
+      push_latest:
+        description: "Also publish component-latest tags"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: prashantdey/kubeathrix
+
+jobs:
+  verify:
+    name: Verify before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.1"
+          cache-dependency-path: |
+            services/api/go.sum
+            operator/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "11.7.0"
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Go tests
+        run: go test ./services/api/... ./operator/... -short
+
+      - name: Build console
+        run: pnpm --filter @kubeathrix/console build
+
+  publish:
+    name: Publish ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            dockerfile: services/api/Dockerfile
+            description: KubeAthrix API and control-plane REST service
+          - component: console
+            dockerfile: apps/console/Dockerfile
+            description: KubeAthrix operator console
+          - component: operator
+            dockerfile: operator/Dockerfile
+            description: KubeAthrix controller-runtime operator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            RAW_VERSION="${{ github.event.release.tag_name }}"
+            PUSH_LATEST="${{ github.event.release.prerelease != true }}"
+          else
+            RAW_VERSION="${{ inputs.version }}"
+            PUSH_LATEST="${{ inputs.push_latest }}"
+          fi
+
+          VERSION="${RAW_VERSION#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: $RAW_VERSION" >&2
+            exit 1
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH_EXTRA <<< "$VERSION"
+          if [[ "$VERSION" == *"-"* ]]; then
+            PUSH_LATEST="false"
+          fi
+          SHORT_SHA="${GITHUB_SHA::12}"
+          TAGS="${REGISTRY}/${IMAGE_NAME}:${{ matrix.component }}-${VERSION}"$'\n'"${REGISTRY}/${IMAGE_NAME}:${{ matrix.component }}-sha-${SHORT_SHA}"
+
+          if [[ "$PUSH_LATEST" == "true" ]]; then
+            TAGS="${TAGS}"$'\n'"${REGISTRY}/${IMAGE_NAME}:${{ matrix.component }}-${MAJOR}"$'\n'"${REGISTRY}/${IMAGE_NAME}:${{ matrix.component }}-${MAJOR}.${MINOR}"$'\n'"${REGISTRY}/${IMAGE_NAME}:${{ matrix.component }}-latest"
+          fi
+
+          {
+            echo "version=${VERSION}"
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=KubeAthrix ${{ matrix.component }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}

@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.1"
+          cache-dependency-path: |
+            services/api/go.sum
+            operator/go.sum
+
+      - name: Run Go tests
+        run: go test ./services/api/... ./operator/... -short
+
+  console:
+    name: Console tests and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "11.7.0"
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run console unit tests
+        run: pnpm --filter @kubeathrix/console test
+
+      - name: Build console
+        run: pnpm --filter @kubeathrix/console build
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @kubeathrix/console exec playwright install --with-deps chromium
+
+      - name: Run console smoke tests
+        run: pnpm --filter @kubeathrix/console test:e2e
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Build chart dependencies
+        run: helm dependency build charts/kubeathrix
+
+      - name: Lint chart
+        run: helm lint charts/kubeathrix
+
+      - name: Render chart
+        run: helm template kubeathrix charts/kubeathrix -n kubeathrix > /tmp/kubeathrix-rendered.yaml
+
+  docker:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            dockerfile: services/api/Dockerfile
+          - component: console
+            dockerfile: apps/console/Dockerfile
+          - component: operator
+            dockerfile: operator/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image without pushing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: kubeathrix/${{ matrix.component }}:ci

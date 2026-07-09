@@ -80,6 +80,10 @@ func (s *Store) CreateRemediationPlan(ctx context.Context, findingID, requester 
 	return s.delegate.CreateRemediationPlan(ctx, findingID, requester)
 }
 
+func (s *Store) CreateRemediationPlanFromFinding(ctx context.Context, finding core.Finding, requester string) (core.RemediationPlan, error) {
+	return s.delegate.CreateRemediationPlanFromFinding(ctx, finding, requester)
+}
+
 func (s *Store) GetRemediationRun(ctx context.Context, id string) (core.RemediationRun, error) {
 	return s.delegate.GetRemediationRun(ctx, id)
 }

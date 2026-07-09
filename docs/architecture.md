@@ -17,12 +17,12 @@ The AI model is part of the decision plane. It summarizes evidence and proposes 
 - Console: React UI for dashboard, findings, fix center, runtime view, policy view, experiments, audit, integrations, and settings.
 - API: Go REST service for normalized findings, remediation plans, approvals, audit events, integrations, and model-provider configuration.
 - Operator: controller-runtime manager that observes KubeAthrix CRDs and updates workflow status.
-- Postgres: queryable history and dashboard storage path. Local demo mode can run with seeded in-memory data.
+- Postgres: queryable history and dashboard storage path. The API can run with in-memory workflow state, but scanner and workflow responses still come from live API paths.
 - Helm chart: internal-service install with CRDs, RBAC, services, deployments, Postgres, and bundled engine dependencies.
 
 ## Core Engines
 
-The first install shape enables Trivy Operator, Kyverno, and Kubescape by default through Helm dependency conditions. Falco, Tetragon, Chaos Mesh, and LitmusChaos are represented as disabled adapters so their workflow slots are visible without forcing runtime/eBPF or chaos privileges in v0.1.
+The first install shape enables Trivy Operator, Kyverno, and Kubescape by default through Helm dependency conditions. Falco, Tetragon, Chaos Mesh, and LitmusChaos remain disabled until their Helm values and required privileges are enabled.
 
 ## Safety Boundary
 

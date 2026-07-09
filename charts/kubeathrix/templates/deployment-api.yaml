@@ -34,6 +34,24 @@ spec:
               value: {{ include "kubeathrix.databaseURL" . | quote }}
             - name: KUBEATHRIX_DEV_AUTH
               value: {{ .Values.auth.devAuthEnabled | quote }}
+            - name: KUBEATHRIX_CLUSTER_INSPECTOR
+              value: {{ .Values.api.clusterInspector.enabled | quote }}
+            - name: KUBEATHRIX_CHAOS_EXECUTION
+              value: {{ .Values.chaos.execution.enabled | quote }}
+            - name: KUBEATHRIX_ENGINE_TRIVY_OPERATOR
+              value: {{ .Values.engines.trivyOperator.enabled | quote }}
+            - name: KUBEATHRIX_ENGINE_KYVERNO
+              value: {{ .Values.engines.kyverno.enabled | quote }}
+            - name: KUBEATHRIX_ENGINE_KUBESCAPE
+              value: {{ .Values.engines.kubescape.enabled | quote }}
+            - name: KUBEATHRIX_ENGINE_FALCO
+              value: {{ .Values.engines.falco.enabled | quote }}
+            - name: KUBEATHRIX_ENGINE_TETRAGON
+              value: {{ .Values.engines.tetragon.enabled | quote }}
+            - name: KUBEATHRIX_ENGINE_CHAOS_MESH
+              value: {{ .Values.engines.chaosMesh.enabled | quote }}
+            - name: KUBEATHRIX_ENGINE_LITMUS
+              value: {{ .Values.engines.litmus.enabled | quote }}
             - name: OIDC_ISSUER_URL
               value: {{ .Values.auth.oidc.issuerURL | quote }}
             - name: OIDC_CLIENT_ID

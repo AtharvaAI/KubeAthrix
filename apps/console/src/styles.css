@@ -37,6 +37,11 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
@@ -220,6 +225,12 @@ button {
   background: #e5f6f5;
   border-color: #b7e7e3;
   color: #0f766e;
+}
+
+.status-pill.danger {
+  background: #ffecea;
+  border-color: #ffc5bf;
+  color: var(--danger);
 }
 
 .status-pill.muted {
@@ -508,6 +519,10 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.fact-grid.dense {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .fact {
   background: var(--panel-soft);
   border: 1px solid #e1e7e3;
@@ -537,6 +552,18 @@ button {
   display: grid;
   gap: 4px;
   padding: 2px 0 2px 12px;
+}
+
+.timeline-item.pass {
+  border-color: #1f9d55;
+}
+
+.timeline-item.fail {
+  border-color: var(--danger);
+}
+
+.compact-timeline {
+  gap: 10px;
 }
 
 .timeline-item span,
@@ -622,6 +649,125 @@ code {
   overflow-wrap: anywhere;
 }
 
+.two-column-list {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.two-column-list ul {
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.control-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.control-card,
+.experiment-card {
+  background: var(--panel-soft);
+  border: 1px solid #e1e7e3;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.control-card.pass {
+  border-left: 4px solid #1f9d55;
+}
+
+.control-card.fail {
+  border-left: 4px solid var(--danger);
+}
+
+.control-card span,
+.control-card small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.control-card p {
+  margin: 0;
+}
+
+.compact-heading {
+  margin-bottom: 0;
+}
+
+.preflight-list {
+  display: grid;
+  gap: 8px;
+}
+
+.preflight-list span {
+  align-items: flex-start;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+.target-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.target-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.target-grid span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.target-grid input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.manifest-editor {
+  background: #101820;
+  border: 1px solid #263544;
+  border-radius: 8px;
+  color: #e9f4ef;
+  font:
+    0.86rem/1.45 "Cascadia Code",
+    "SFMono-Regular",
+    Consolas,
+    monospace;
+  min-height: 280px;
+  padding: 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+.file-button {
+  cursor: pointer;
+  position: relative;
+}
+
+.file-button input {
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+
 .integration-grid {
   display: grid;
   gap: 16px;
@@ -691,7 +837,11 @@ code {
 
   .nav-list,
   .fact-grid,
-  .experiment-grid {
+  .fact-grid.dense,
+  .experiment-grid,
+  .target-grid,
+  .control-grid,
+  .two-column-list {
     grid-template-columns: 1fr;
   }
 

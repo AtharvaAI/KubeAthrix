@@ -51,6 +51,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "kubeathrix.postgresSecretName" . }}
                   key: {{ .Values.postgres.passwordKey }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
@@ -59,6 +61,9 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgres.storageClassName }}
+        storageClassName: {{ .Values.postgres.storageClassName | quote }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.postgres.storageSize }}

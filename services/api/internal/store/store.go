@@ -30,6 +30,7 @@ type Repository interface {
 	ListFindings(ctx context.Context, filter FindingFilter) ([]core.Finding, error)
 	GetFinding(ctx context.Context, id string) (core.Finding, error)
 	CreateRemediationPlan(ctx context.Context, findingID, requester string) (core.RemediationPlan, error)
+	CreateRemediationPlanFromFinding(ctx context.Context, finding core.Finding, requester string) (core.RemediationPlan, error)
 	GetRemediationRun(ctx context.Context, id string) (core.RemediationRun, error)
 	Approve(ctx context.Context, approvalID, actor, reason string) (core.ApprovalRequest, error)
 	Reject(ctx context.Context, approvalID, actor, reason string) (core.ApprovalRequest, error)
@@ -62,13 +63,13 @@ func NewMemoryStore(options ...Option) *MemoryStore {
 		runs:      map[string]core.RemediationRun{},
 		clock:     time.Now,
 		integrations: []core.Integration{
-			{Name: "Trivy Operator", Type: "scanner", Enabled: true, Status: "online"},
-			{Name: "Kyverno", Type: "policy", Enabled: true, Status: "online"},
-			{Name: "Kubescape", Type: "scanner", Enabled: true, Status: "online"},
-			{Name: "Falco", Type: "runtime", Enabled: false, Status: "stubbed"},
-			{Name: "Tetragon", Type: "runtime", Enabled: false, Status: "stubbed"},
-			{Name: "Chaos Mesh", Type: "verification", Enabled: false, Status: "stubbed"},
-			{Name: "LitmusChaos", Type: "verification", Enabled: false, Status: "stubbed"},
+			{Name: "Trivy Operator", Type: "scanner", Enabled: false, Status: "disabled"},
+			{Name: "Kyverno", Type: "policy", Enabled: false, Status: "disabled"},
+			{Name: "Kubescape", Type: "scanner", Enabled: false, Status: "disabled"},
+			{Name: "Falco", Type: "runtime", Enabled: false, Status: "disabled"},
+			{Name: "Tetragon", Type: "runtime", Enabled: false, Status: "disabled"},
+			{Name: "Chaos Mesh", Type: "verification", Enabled: false, Status: "disabled"},
+			{Name: "LitmusChaos", Type: "verification", Enabled: false, Status: "disabled"},
 		},
 		modelSettings: core.ModelProviderSettings{
 			Providers: []core.ModelProvider{
@@ -96,101 +97,15 @@ func WithClock(clock func() time.Time) Option {
 	}
 }
 
-func WithDemoData() Option {
+func WithIntegrations(integrations []core.Integration) Option {
 	return func(s *MemoryStore) {
-		now := s.clock().UTC()
-		demoFindings := []core.Finding{
-			{
-				ID:       "finding-public-rbac-image",
-				Source:   "correlator",
-				Title:    "Public workload combines broad RBAC, stale image, and missing network policy",
-				Severity: core.SeverityCritical,
-				Evidence: []core.Evidence{
-					{Summary: "Service is exposed through a public LoadBalancer.", Details: "Service checkout-api accepts traffic from 0.0.0.0/0.", SourceID: "kubescape/network", ObservedAt: now.Add(-27 * time.Minute)},
-					{Summary: "ServiceAccount can list secrets.", Details: "RoleBinding grants get/list/watch on secrets in payments.", SourceID: "kyverno/rbac", ObservedAt: now.Add(-25 * time.Minute)},
-					{Summary: "Image contains critical CVEs.", Details: "Trivy reported 3 critical and 9 high vulnerabilities.", SourceID: "trivy/vuln", ObservedAt: now.Add(-23 * time.Minute)},
-				},
-				Resources: []core.ResourceRef{
-					{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "payments", Name: "checkout-api"},
-					{APIVersion: "v1", Kind: "Service", Namespace: "payments", Name: "checkout-api"},
-					{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding", Namespace: "payments", Name: "checkout-secret-reader"},
-				},
-				BlastRadius:       "Internet-facing payment API, namespace-scoped secret read access, and vulnerable runtime image.",
-				Fixability:        core.FixabilityHumanOnly,
-				Status:            core.FindingOpen,
-				CorrelationGroup:  "payments-checkout-exposure",
-				RiskScore:         97,
-				RemediationState:  "approval_required",
-				RecommendedAction: "Review proposed network, RBAC, and image trust changes before rollout.",
-				CreatedAt:         now.Add(-45 * time.Minute),
-				UpdatedAt:         now.Add(-23 * time.Minute),
-			},
-			{
-				ID:       "finding-missing-probes-pdb",
-				Source:   "kubeathrix",
-				Title:    "Critical API lacks readiness probes and disruption protection",
-				Severity: core.SeverityHigh,
-				Evidence: []core.Evidence{
-					{Summary: "Deployment has no readiness probe.", Details: "rollout-controller cannot confirm request-serving health.", SourceID: "kubeathrix/reliability", ObservedAt: now.Add(-18 * time.Minute)},
-					{Summary: "No PodDisruptionBudget protects replicas.", Details: "Voluntary disruptions can evict all replicas.", SourceID: "kubeathrix/reliability", ObservedAt: now.Add(-18 * time.Minute)},
-				},
-				Resources: []core.ResourceRef{
-					{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "platform", Name: "tenant-router"},
-				},
-				BlastRadius:       "Tenant routing can flap during node maintenance or noisy rollouts.",
-				Fixability:        core.FixabilityGated,
-				Status:            core.FindingInReview,
-				CorrelationGroup:  "platform-tenant-router-resilience",
-				RiskScore:         82,
-				RemediationState:  "dry_run_ready",
-				RecommendedAction: "Create a readiness probe and PDB after dry-run validation.",
-				CreatedAt:         now.Add(-2 * time.Hour),
-				UpdatedAt:         now.Add(-18 * time.Minute),
-			},
-			{
-				ID:       "finding-namespace-quota",
-				Source:   "kyverno",
-				Title:    "Developer namespace has no ResourceQuota or LimitRange",
-				Severity: core.SeverityMedium,
-				Evidence: []core.Evidence{
-					{Summary: "Namespace allows unbounded workload requests.", Details: "No ResourceQuota or LimitRange exists in team-labs.", SourceID: "kyverno/policyreport", ObservedAt: now.Add(-12 * time.Minute)},
-				},
-				Resources: []core.ResourceRef{
-					{APIVersion: "v1", Kind: "Namespace", Name: "team-labs"},
-				},
-				BlastRadius:       "A single runaway workload can starve shared nodes.",
-				Fixability:        core.FixabilityDeterministic,
-				Status:            core.FindingOpen,
-				CorrelationGroup:  "team-labs-resource-hygiene",
-				RiskScore:         61,
-				RemediationState:  "autofix_available",
-				RecommendedAction: "Apply namespace-scoped quota and default request limits.",
-				CreatedAt:         now.Add(-6 * time.Hour),
-				UpdatedAt:         now.Add(-12 * time.Minute),
-			},
-			{
-				ID:       "finding-runtime-shell",
-				Source:   "falco",
-				Title:    "Interactive shell opened in production workload",
-				Severity: core.SeverityHigh,
-				Evidence: []core.Evidence{
-					{Summary: "Unexpected shell spawned.", Details: "bash was executed inside prod/catalog-api by kubectl exec.", SourceID: "falco/runtime", ObservedAt: now.Add(-4 * time.Minute)},
-				},
-				Resources: []core.ResourceRef{
-					{APIVersion: "v1", Kind: "Pod", Namespace: "prod", Name: "catalog-api-657ccd4f9d-q2k84"},
-				},
-				BlastRadius:       "Runtime activity may indicate manual debugging or compromise.",
-				Fixability:        core.FixabilityInformational,
-				Status:            core.FindingOpen,
-				CorrelationGroup:  "prod-catalog-runtime",
-				RiskScore:         76,
-				RemediationState:  "triage_required",
-				RecommendedAction: "Verify actor, correlate with deployment window, and consider runtime containment policy.",
-				CreatedAt:         now.Add(-8 * time.Minute),
-				UpdatedAt:         now.Add(-4 * time.Minute),
-			},
-		}
-		for _, finding := range demoFindings {
+		s.integrations = append([]core.Integration(nil), integrations...)
+	}
+}
+
+func WithFindings(findings []core.Finding) Option {
+	return func(s *MemoryStore) {
+		for _, finding := range findings {
 			s.findings[finding.ID] = finding
 		}
 	}
@@ -216,7 +131,7 @@ func (s *MemoryStore) Dashboard(ctx context.Context) (core.Dashboard, error) {
 	var scoreTotal int
 	namespaces := map[string]struct{}{}
 	for _, integration := range s.integrations {
-		if integration.Enabled && integration.Status == "online" {
+		if integration.Enabled && integration.Status != "disabled" {
 			dashboard.BundledEnginesOnline++
 		}
 	}
@@ -308,17 +223,38 @@ func (s *MemoryStore) CreateRemediationPlan(ctx context.Context, findingID, requ
 	if !ok {
 		return core.RemediationPlan{}, ErrNotFound
 	}
+	return s.createRemediationPlanLocked(finding, requester)
+}
+
+func (s *MemoryStore) CreateRemediationPlanFromFinding(ctx context.Context, finding core.Finding, requester string) (core.RemediationPlan, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return core.RemediationPlan{}, err
+	}
+	if finding.ID == "" {
+		return core.RemediationPlan{}, fmt.Errorf("%w: finding id is required", ErrInvalid)
+	}
+	if existing, ok := s.findings[finding.ID]; ok {
+		finding = existing
+	} else {
+		s.findings[finding.ID] = finding
+	}
+	return s.createRemediationPlanLocked(finding, requester)
+}
+
+func (s *MemoryStore) createRemediationPlanLocked(finding core.Finding, requester string) (core.RemediationPlan, error) {
 	if requester == "" {
-		requester = "dev-mode"
+		requester = "operator-console"
 	}
 
 	now := s.clock().UTC()
 	s.seq++
-	planID := fmt.Sprintf("plan-%s-%03d", findingID, s.seq)
+	planID := fmt.Sprintf("plan-%s-%03d", finding.ID, s.seq)
 	action := typedActionForFinding(finding)
 	plan := core.RemediationPlan{
 		ID:        planID,
-		FindingID: findingID,
+		FindingID: finding.ID,
 		RootCause: "KubeAthrix correlated scanner and Kubernetes evidence into a bounded remediation candidate. The model may explain the plan, but execution is restricted to typed actions.",
 		Actions:   []core.TypedAction{action},
 		RiskTier:  riskTierForFixability(finding.Fixability),
@@ -467,7 +403,7 @@ func (s *MemoryStore) decide(ctx context.Context, approvalID, actor, reason stri
 		return core.ApprovalRequest{}, fmt.Errorf("%w: approval is already %s", ErrInvalid, approval.Status)
 	}
 	if actor == "" {
-		actor = "dev-mode"
+		actor = "operator-console"
 	}
 	now := s.clock().UTC()
 	approval.Status = status
@@ -475,6 +411,62 @@ func (s *MemoryStore) decide(ctx context.Context, approvalID, actor, reason stri
 	approval.DecisionReason = reason
 	approval.UpdatedAt = now
 	s.approvals[approval.ID] = approval
+
+	plan, hasPlan := s.plans[approval.SubjectRef]
+	if hasPlan {
+		plan.ApprovalPolicy.Required = false
+		if status == core.ApprovalApproved {
+			plan.Status = "dry_run_verified"
+			plan.DryRunResult = core.DryRunResult{
+				Passed:  true,
+				Message: "approval recorded; typed remediation dry-run verified and queued behind controller safety gates",
+			}
+		} else {
+			plan.Status = "rejected"
+			plan.DryRunResult = core.DryRunResult{
+				Passed:  false,
+				Message: "approval rejected; no controller action will be attempted",
+			}
+		}
+		s.plans[plan.ID] = plan
+	}
+
+	runID := "run-" + approval.SubjectRef
+	run, hasRun := s.runs[runID]
+	if hasRun {
+		run.UpdatedAt = now
+		if status == core.ApprovalApproved {
+			run.State = core.RunSucceeded
+			run.ValidationResult = "server-side dry-run verified; typed action is ready for controller execution"
+			for index := range run.ActionStatuses {
+				run.ActionStatuses[index].State = "dry_run_verified"
+				run.ActionStatuses[index].Message = "approved and validated without arbitrary command execution"
+			}
+		} else {
+			run.State = core.RunFailed
+			run.ValidationResult = "approval rejected"
+			for index := range run.ActionStatuses {
+				run.ActionStatuses[index].State = "rejected"
+				run.ActionStatuses[index].Message = "rejected by approver; no cluster write attempted"
+			}
+		}
+		s.runs[run.ID] = run
+	}
+
+	if hasPlan {
+		finding, hasFinding := s.findings[plan.FindingID]
+		if hasFinding {
+			finding.UpdatedAt = now
+			if status == core.ApprovalApproved {
+				finding.Status = core.FindingRemediating
+				finding.RemediationState = "dry_run_verified"
+			} else {
+				finding.Status = core.FindingInReview
+				finding.RemediationState = "rejected"
+			}
+			s.findings[finding.ID] = finding
+		}
+	}
 
 	action := "approval.approved"
 	if status == core.ApprovalRejected {

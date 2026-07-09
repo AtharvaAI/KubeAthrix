@@ -14,10 +14,10 @@ paths:
           description: API is healthy
   /dashboard:
     get:
-      summary: Aggregated risk and remediation dashboard
+      summary: Aggregated risk, live inventory, scan coverage, and remediation dashboard
       responses:
         "200":
-          description: Dashboard metrics
+          description: Dashboard metrics, cluster inventory, compliance controls, and experiment templates
   /findings:
     get:
       summary: List normalized findings
@@ -102,6 +102,35 @@ paths:
       responses:
         "200":
           description: Integration list
+  /experiments:
+    get:
+      summary: List predefined chaos experiment templates
+      responses:
+        "200":
+          description: Experiment template list
+  /experiments/{id}/runs:
+    post:
+      summary: Create a preflight-ready chaos experiment run
+      description: Accepts predefined or custom chaos manifests behind an explicit execution gate.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                manifest: { type: string }
+                requestedBy: { type: string }
+                targetNamespace: { type: string }
+                targetName: { type: string }
+      responses:
+        "202":
+          description: Experiment manifest accepted for preflight
   /settings/model-providers:
     get:
       summary: Get model provider references

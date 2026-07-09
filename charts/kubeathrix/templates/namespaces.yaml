@@ -1,0 +1,11 @@
+{{- if .Values.engines.kubescape.enabled }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubescape
+  labels:
+    app.kubernetes.io/name: kubescape
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: kubeathrix
+{{- end }}

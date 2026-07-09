@@ -1,0 +1,60 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "package-name": "kubeathrix",
+  "include-component-in-tag": false,
+  "pull-request-title-pattern": "chore: release ${version}",
+  "extra-files": [
+    {
+      "type": "json",
+      "path": "package.json",
+      "jsonpath": "$.version"
+    },
+    {
+      "type": "json",
+      "path": "apps/console/package.json",
+      "jsonpath": "$.version"
+    },
+    {
+      "type": "yaml",
+      "path": "charts/kubeathrix/Chart.yaml",
+      "jsonpath": "$.version"
+    },
+    {
+      "type": "yaml",
+      "path": "charts/kubeathrix/Chart.yaml",
+      "jsonpath": "$.appVersion"
+    },
+    {
+      "type": "generic",
+      "path": "charts/kubeathrix/values.yaml"
+    },
+    {
+      "type": "generic",
+      "path": "README.md"
+    },
+    {
+      "type": "generic",
+      "path": "docs/installation.md"
+    },
+    {
+      "type": "generic",
+      "path": "docs/docker-from-source.md"
+    },
+    {
+      "type": "generic",
+      "path": "docs/docker-images.md"
+    },
+    {
+      "type": "generic",
+      "path": "docs/release-process.md"
+    },
+    {
+      "type": "generic",
+      "path": "deploy/docker-compose.images.yaml"
+    }
+  ],
+  "packages": {
+    ".": {}
+  }
+}

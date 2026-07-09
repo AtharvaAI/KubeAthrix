@@ -24,6 +24,9 @@ spec:
           ports:
             - name: http
               containerPort: 80
+          env:
+            - name: KUBEATHRIX_API_UPSTREAM
+              value: http://{{ include "kubeathrix.fullname" . }}-api:{{ .Values.service.api.port }}
           readinessProbe:
             httpGet:
               path: /
@@ -34,11 +37,3 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.resources.console | nindent 12 }}
-          volumeMounts:
-            - name: nginx-config
-              mountPath: /etc/nginx/conf.d/default.conf
-              subPath: default.conf
-      volumes:
-        - name: nginx-config
-          configMap:
-            name: {{ include "kubeathrix.fullname" . }}-console-nginx

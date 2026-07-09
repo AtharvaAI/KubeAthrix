@@ -16,8 +16,97 @@ import (
 
 func testServer() http.Handler {
 	fixed := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
-	repo := store.NewMemoryStore(store.WithClock(func() time.Time { return fixed }), store.WithDemoData())
+	repo := store.NewMemoryStore(
+		store.WithClock(func() time.Time { return fixed }),
+		store.WithFindings(testFindings(fixed)),
+		store.WithIntegrations([]core.Integration{
+			{Name: "Trivy Operator", Type: "scanner", Enabled: true, Status: "configured"},
+			{Name: "Kyverno", Type: "policy", Enabled: true, Status: "configured"},
+			{Name: "Kubescape", Type: "scanner", Enabled: true, Status: "configured"},
+		}),
+	)
 	return httpapi.NewServer(repo, httpapi.Config{DevAuthEnabled: true}).Routes()
+}
+
+func testFindings(now time.Time) []core.Finding {
+	return []core.Finding{
+		{
+			ID:       "finding-public-rbac-image",
+			Source:   "correlator",
+			Title:    "Public workload combines broad RBAC, stale image, and missing network policy",
+			Severity: core.SeverityCritical,
+			Evidence: []core.Evidence{
+				{Summary: "Service is exposed through a public LoadBalancer.", Details: "Service checkout-api accepts traffic from 0.0.0.0/0.", SourceID: "kubescape/network", ObservedAt: now.Add(-27 * time.Minute)},
+				{Summary: "ServiceAccount can list secrets.", Details: "RoleBinding grants get/list/watch on secrets in payments.", SourceID: "kyverno/rbac", ObservedAt: now.Add(-25 * time.Minute)},
+			},
+			Resources: []core.ResourceRef{
+				{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "payments", Name: "checkout-api"},
+				{APIVersion: "v1", Kind: "Service", Namespace: "payments", Name: "checkout-api"},
+			},
+			BlastRadius:       "Internet-facing payment API with namespace secret visibility.",
+			Fixability:        core.FixabilityHumanOnly,
+			Status:            core.FindingOpen,
+			CorrelationGroup:  "payments-checkout-exposure",
+			RiskScore:         97,
+			RemediationState:  "approval_required",
+			RecommendedAction: "Review network, RBAC, and image trust changes before rollout.",
+			CreatedAt:         now.Add(-45 * time.Minute),
+			UpdatedAt:         now.Add(-23 * time.Minute),
+		},
+		{
+			ID:       "finding-missing-probes-pdb",
+			Source:   "kubeathrix",
+			Title:    "Critical API lacks readiness probes and disruption protection",
+			Severity: core.SeverityHigh,
+			Evidence: []core.Evidence{
+				{Summary: "Deployment has no readiness probe.", Details: "rollout-controller cannot confirm request-serving health.", SourceID: "kubeathrix/reliability", ObservedAt: now.Add(-18 * time.Minute)},
+			},
+			Resources:         []core.ResourceRef{{APIVersion: "apps/v1", Kind: "Deployment", Namespace: "platform", Name: "tenant-router"}},
+			BlastRadius:       "Tenant routing can flap during node maintenance.",
+			Fixability:        core.FixabilityGated,
+			Status:            core.FindingInReview,
+			CorrelationGroup:  "platform-tenant-router-resilience",
+			RiskScore:         82,
+			RemediationState:  "dry_run_ready",
+			RecommendedAction: "Create a readiness probe and PDB after dry-run validation.",
+			CreatedAt:         now.Add(-2 * time.Hour),
+			UpdatedAt:         now.Add(-18 * time.Minute),
+		},
+		{
+			ID:                "finding-namespace-quota",
+			Source:            "kyverno",
+			Title:             "Developer namespace has no ResourceQuota or LimitRange",
+			Severity:          core.SeverityMedium,
+			Evidence:          []core.Evidence{{Summary: "Unbounded namespace", Details: "No ResourceQuota or LimitRange exists in team-labs.", SourceID: "kyverno/policyreport", ObservedAt: now.Add(-12 * time.Minute)}},
+			Resources:         []core.ResourceRef{{APIVersion: "v1", Kind: "Namespace", Name: "team-labs"}},
+			BlastRadius:       "A runaway workload can starve shared nodes.",
+			Fixability:        core.FixabilityDeterministic,
+			Status:            core.FindingOpen,
+			CorrelationGroup:  "team-labs-resource-hygiene",
+			RiskScore:         61,
+			RemediationState:  "autofix_available",
+			RecommendedAction: "Apply namespace-scoped quota and default request limits.",
+			CreatedAt:         now.Add(-6 * time.Hour),
+			UpdatedAt:         now.Add(-12 * time.Minute),
+		},
+		{
+			ID:                "finding-runtime-shell",
+			Source:            "falco",
+			Title:             "Interactive shell opened in production workload",
+			Severity:          core.SeverityHigh,
+			Evidence:          []core.Evidence{{Summary: "Unexpected shell spawned.", Details: "bash was executed inside prod/catalog-api by kubectl exec.", SourceID: "falco/runtime", ObservedAt: now.Add(-4 * time.Minute)}},
+			Resources:         []core.ResourceRef{{APIVersion: "v1", Kind: "Pod", Namespace: "prod", Name: "catalog-api-657ccd4f9d-q2k84"}},
+			BlastRadius:       "Runtime activity may indicate manual debugging or compromise.",
+			Fixability:        core.FixabilityInformational,
+			Status:            core.FindingOpen,
+			CorrelationGroup:  "prod-catalog-runtime",
+			RiskScore:         76,
+			RemediationState:  "triage_required",
+			RecommendedAction: "Verify actor and correlate with deployment window.",
+			CreatedAt:         now.Add(-8 * time.Minute),
+			UpdatedAt:         now.Add(-4 * time.Minute),
+		},
+	}
 }
 
 func TestFindingFilters(t *testing.T) {
