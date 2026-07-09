@@ -179,6 +179,119 @@ func TestCreatePlanUsesTypedActionsOnly(t *testing.T) {
 	}
 }
 
+func TestPlanPreviewDiffAndEvidenceBundle(t *testing.T) {
+	handler := testServer()
+	previewBody := bytes.NewBufferString(`{"findingId":"finding-namespace-quota","requestedBy":"platform-sre"}`)
+	previewReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans/preview", previewBody)
+	previewRes := httptest.NewRecorder()
+	handler.ServeHTTP(previewRes, previewReq)
+	if previewRes.Code != http.StatusOK {
+		t.Fatalf("expected preview 200, got %d: %s", previewRes.Code, previewRes.Body.String())
+	}
+	var preview core.RemediationPreview
+	if err := json.NewDecoder(previewRes.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.PromptEvidenceHash == "" || len(preview.EvidenceCitations) == 0 {
+		t.Fatal("preview must include evidence hash and citations")
+	}
+
+	createBody := bytes.NewBufferString(`{"findingId":"finding-namespace-quota","requestedBy":"platform-sre"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans", createBody)
+	createRes := httptest.NewRecorder()
+	handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected create 201, got %d: %s", createRes.Code, createRes.Body.String())
+	}
+	var plan core.RemediationPlan
+	if err := json.NewDecoder(createRes.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	diffReq := httptest.NewRequest(http.MethodGet, "/api/remediation-plans/"+plan.ID+"/diff", nil)
+	diffRes := httptest.NewRecorder()
+	handler.ServeHTTP(diffRes, diffReq)
+	if diffRes.Code != http.StatusOK {
+		t.Fatalf("expected diff 200, got %d: %s", diffRes.Code, diffRes.Body.String())
+	}
+	var diff core.RemediationDiff
+	if err := json.NewDecoder(diffRes.Body).Decode(&diff); err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Manifests) == 0 || diff.Manifests[0].WriteMode == "" {
+		t.Fatal("diff must expose planned manifests and write mode")
+	}
+	executeReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans/"+plan.ID+"/execute", bytes.NewBufferString(`{"actor":"platform-sre"}`))
+	executeRes := httptest.NewRecorder()
+	handler.ServeHTTP(executeRes, executeReq)
+	if executeRes.Code != http.StatusAccepted {
+		t.Fatalf("expected execute 202, got %d: %s", executeRes.Code, executeRes.Body.String())
+	}
+	bundleReq := httptest.NewRequest(http.MethodGet, "/api/evidence-bundles/"+plan.ID, nil)
+	bundleRes := httptest.NewRecorder()
+	handler.ServeHTTP(bundleRes, bundleReq)
+	if bundleRes.Code != http.StatusOK {
+		t.Fatalf("expected evidence bundle 200, got %d: %s", bundleRes.Code, bundleRes.Body.String())
+	}
+	var bundle core.EvidenceBundle
+	if err := json.NewDecoder(bundleRes.Body).Decode(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Summary["plans"] != 1 || bundle.Summary["auditEvents"] == 0 {
+		t.Fatalf("expected plan and audit evidence, got %#v", bundle.Summary)
+	}
+}
+
+func TestExecuteRequiresApprovalForGatedPlan(t *testing.T) {
+	handler := testServer()
+	createBody := bytes.NewBufferString(`{"findingId":"finding-missing-probes-pdb","requestedBy":"platform-sre"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans", createBody)
+	createRes := httptest.NewRecorder()
+	handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", createRes.Code, createRes.Body.String())
+	}
+	var plan core.RemediationPlan
+	if err := json.NewDecoder(createRes.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	executeReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans/"+plan.ID+"/execute", bytes.NewBufferString(`{"actor":"platform-sre"}`))
+	executeRes := httptest.NewRecorder()
+	handler.ServeHTTP(executeRes, executeReq)
+	if executeRes.Code != http.StatusBadRequest {
+		t.Fatalf("expected gated execute 400, got %d: %s", executeRes.Code, executeRes.Body.String())
+	}
+}
+
+func TestFindingGroupingAndIntegrationHealth(t *testing.T) {
+	handler := testServer()
+	groupReq := httptest.NewRequest(http.MethodGet, "/api/findings?groupBy=namespace", nil)
+	groupRes := httptest.NewRecorder()
+	handler.ServeHTTP(groupRes, groupReq)
+	if groupRes.Code != http.StatusOK {
+		t.Fatalf("expected grouped findings 200, got %d: %s", groupRes.Code, groupRes.Body.String())
+	}
+	var grouped core.FindingListResponse
+	if err := json.NewDecoder(groupRes.Body).Decode(&grouped); err != nil {
+		t.Fatal(err)
+	}
+	if len(grouped.Groups) == 0 {
+		t.Fatal("expected grouped finding response")
+	}
+	healthReq := httptest.NewRequest(http.MethodGet, "/api/integrations/Kyverno/health", nil)
+	healthRes := httptest.NewRecorder()
+	handler.ServeHTTP(healthRes, healthReq)
+	if healthRes.Code != http.StatusOK {
+		t.Fatalf("expected health 200, got %d: %s", healthRes.Code, healthRes.Body.String())
+	}
+	var health core.IntegrationHealth
+	if err := json.NewDecoder(healthRes.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Health != "healthy" || len(health.Permissions) == 0 {
+		t.Fatalf("unexpected integration health %#v", health)
+	}
+}
+
 func TestApprovalTransitionCreatesAuditEvent(t *testing.T) {
 	handler := testServer()
 	createBody := bytes.NewBufferString(`{"findingId":"finding-missing-probes-pdb","requestedBy":"platform-sre"}`)

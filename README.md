@@ -53,4 +53,4 @@ docker pull docker.io/prashantdey/kubeathrix:operator-0.1.0
 ```
 <!-- x-release-please-end -->
 
-See [docs/scanning-process.md](docs/scanning-process.md), [docs/docker-from-source.md](docs/docker-from-source.md), [docs/docker-images.md](docs/docker-images.md), and [docs/release-process.md](docs/release-process.md).
+See [docs/product-strategy.md](docs/product-strategy.md), [docs/scanning-process.md](docs/scanning-process.md), [docs/remediation-catalog.md](docs/remediation-catalog.md), [docs/docker-from-source.md](docs/docker-from-source.md), [docs/docker-images.md](docs/docker-images.md), and [docs/release-process.md](docs/release-process.md).

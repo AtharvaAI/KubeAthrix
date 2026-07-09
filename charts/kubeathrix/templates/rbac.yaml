@@ -45,6 +45,9 @@ metadata:
   labels:
     {{- include "kubeathrix.labels" . | nindent 4 }}
 rules:
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["security.kubeathrix.io"]
     resources: ["findings", "remediationplans", "approvalrequests", "remediationruns", "exceptions"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -47,12 +48,17 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dashboard", s.dashboard)
 	mux.HandleFunc("GET /api/findings", s.listFindings)
 	mux.HandleFunc("GET /api/findings/{id}", s.getFinding)
+	mux.HandleFunc("POST /api/remediation-plans/preview", s.previewRemediationPlan)
 	mux.HandleFunc("POST /api/remediation-plans", s.createRemediationPlan)
+	mux.HandleFunc("GET /api/remediation-plans/{id}/diff", s.getRemediationPlanDiff)
+	mux.HandleFunc("POST /api/remediation-plans/{id}/execute", s.executeRemediationPlan)
 	mux.HandleFunc("GET /api/remediation-runs/{id}", s.getRemediationRun)
 	mux.HandleFunc("POST /api/approvals/{id}/approve", s.approve)
 	mux.HandleFunc("POST /api/approvals/{id}/reject", s.reject)
 	mux.HandleFunc("GET /api/audit-events", s.auditEvents)
+	mux.HandleFunc("GET /api/evidence-bundles/{scope}", s.evidenceBundle)
 	mux.HandleFunc("GET /api/integrations", s.integrations)
+	mux.HandleFunc("GET /api/integrations/{name}/health", s.integrationHealth)
 	mux.HandleFunc("GET /api/experiments", s.experiments)
 	mux.HandleFunc("POST /api/experiments/{id}/runs", s.startExperiment)
 	mux.HandleFunc("GET /api/settings/model-providers", s.getModelProviders)
@@ -95,7 +101,16 @@ func (s *Server) listFindings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	findings = s.mergeLiveFindings(r.Context(), findings, filter)
-	writeJSON(w, http.StatusOK, map[string]any{"items": findings})
+	response := core.FindingListResponse{Items: findings}
+	if groupBy := r.URL.Query().Get("groupBy"); groupBy != "" {
+		groups, err := groupFindings(findings, groupBy)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		response.Groups = groups
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +130,39 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, finding)
+}
+
+func (s *Server) previewRemediationPlan(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		FindingID   string `json:"findingId"`
+		RequestedBy string `json:"requestedBy"`
+	}
+	if !decodeStrict(w, r, &request) {
+		return
+	}
+	if request.FindingID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("findingId is required"))
+		return
+	}
+	preview, err := s.repository.PreviewRemediationPlan(r.Context(), request.FindingID, request.RequestedBy)
+	if errors.Is(err, store.ErrNotFound) {
+		if liveFinding, ok := s.findLiveFinding(r.Context(), request.FindingID); ok {
+			now := time.Now().UTC()
+			plan := store.BuildRemediationPlan(liveFinding, request.RequestedBy, now, 0)
+			plan.ID = "preview-" + liveFinding.ID
+			preview = store.BuildRemediationPreview(liveFinding, plan, now)
+			err = nil
+		}
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
 }
 
 func (s *Server) createRemediationPlan(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +192,41 @@ func (s *Server) createRemediationPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, plan)
+}
+
+func (s *Server) getRemediationPlanDiff(w http.ResponseWriter, r *http.Request) {
+	diff, err := s.repository.GetRemediationPlanDiff(r.Context(), r.PathValue("id"))
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, diff)
+}
+
+func (s *Server) executeRemediationPlan(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Actor string `json:"actor"`
+	}
+	if !decodeStrict(w, r, &request) {
+		return
+	}
+	run, err := s.repository.ExecuteRemediationPlan(r.Context(), r.PathValue("id"), request.Actor)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, store.ErrInvalid):
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, run)
 }
 
 func (s *Server) getRemediationRun(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +290,19 @@ func (s *Server) auditEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": events})
 }
 
+func (s *Server) evidenceBundle(w http.ResponseWriter, r *http.Request) {
+	bundle, err := s.repository.EvidenceBundle(r.Context(), pathValue(r, "scope"))
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, bundle)
+}
+
 func (s *Server) integrations(w http.ResponseWriter, r *http.Request) {
 	integrations, err := s.repository.ListIntegrations(r.Context())
 	if err != nil {
@@ -214,6 +310,19 @@ func (s *Server) integrations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": integrations})
+}
+
+func (s *Server) integrationHealth(w http.ResponseWriter, r *http.Request) {
+	health, err := s.repository.IntegrationHealth(r.Context(), pathValue(r, "name"))
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
 }
 
 func (s *Server) experiments(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +438,7 @@ func (s *Server) enrichDashboard(ctx context.Context, dashboard core.Dashboard) 
 	if snapshot.Inventory.Namespaces > dashboard.ProtectedNamespaces {
 		dashboard.ProtectedNamespaces = snapshot.Inventory.Namespaces
 	}
+	dashboard.EvidenceFreshness = freshnessLabel(snapshot.Scan.LastRunAt, time.Now().UTC())
 
 	persisted, err := s.repository.ListFindings(ctx, store.FindingFilter{})
 	seen := map[string]bool{}
@@ -406,6 +516,12 @@ func addFindingToDashboard(dashboard *core.Dashboard, finding core.Finding) {
 	if finding.Status == core.FindingRemediating {
 		dashboard.ActiveRemediations++
 	}
+	if finding.Fixability == core.FixabilityDeterministic || finding.Fixability == core.FixabilityGated {
+		dashboard.FindingsWithSafeFix++
+	}
+	if finding.Status == core.FindingResolved {
+		dashboard.RiskReduced += finding.RiskScore
+	}
 	if dashboard.TotalFindings > 0 {
 		scoreTotal := int(dashboard.MeanRiskScore * float64(dashboard.TotalFindings-1))
 		dashboard.MeanRiskScore = float64(scoreTotal+finding.RiskScore) / float64(dashboard.TotalFindings)
@@ -450,6 +566,109 @@ func findExperiment(experiments []core.ChaosExperiment, id string) (core.ChaosEx
 		}
 	}
 	return core.ChaosExperiment{}, false
+}
+
+func groupFindings(findings []core.Finding, groupBy string) ([]core.FindingGroup, error) {
+	if groupBy != "workload" && groupBy != "namespace" && groupBy != "owner" {
+		return nil, fmt.Errorf("unsupported groupBy %q", groupBy)
+	}
+	groupsByKey := map[string]*core.FindingGroup{}
+	for _, finding := range findings {
+		key := groupKey(finding, groupBy)
+		group := groupsByKey[key]
+		if group == nil {
+			group = &core.FindingGroup{GroupBy: groupBy, Key: key, HighestSeverity: finding.Severity}
+			groupsByKey[key] = group
+		}
+		group.Count++
+		group.MeanRiskScore += float64(finding.RiskScore)
+		group.Findings = append(group.Findings, finding)
+		if severityRank(finding.Severity) > severityRank(group.HighestSeverity) {
+			group.HighestSeverity = finding.Severity
+		}
+	}
+	groups := make([]core.FindingGroup, 0, len(groupsByKey))
+	for _, group := range groupsByKey {
+		if group.Count > 0 {
+			group.MeanRiskScore = group.MeanRiskScore / float64(group.Count)
+		}
+		groups = append(groups, *group)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].MeanRiskScore == groups[j].MeanRiskScore {
+			return groups[i].Key < groups[j].Key
+		}
+		return groups[i].MeanRiskScore > groups[j].MeanRiskScore
+	})
+	return groups, nil
+}
+
+func groupKey(finding core.Finding, groupBy string) string {
+	if len(finding.Resources) == 0 {
+		return "unscoped"
+	}
+	resource := finding.Resources[0]
+	switch groupBy {
+	case "namespace":
+		if resource.Namespace != "" {
+			return resource.Namespace
+		}
+		if resource.Kind == "Namespace" {
+			return resource.Name
+		}
+	case "owner":
+		parts := strings.Split(finding.CorrelationGroup, "-")
+		if len(parts) > 0 && parts[0] != "" {
+			return parts[0]
+		}
+	case "workload":
+		if resource.Namespace != "" {
+			return resource.Namespace + "/" + resource.Name
+		}
+		return resource.Name
+	}
+	return "cluster"
+}
+
+func severityRank(severity core.Severity) int {
+	switch severity {
+	case core.SeverityCritical:
+		return 5
+	case core.SeverityHigh:
+		return 4
+	case core.SeverityMedium:
+		return 3
+	case core.SeverityLow:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func freshnessLabel(observedAt time.Time, now time.Time) string {
+	if observedAt.IsZero() {
+		return "no-evidence"
+	}
+	age := now.Sub(observedAt)
+	switch {
+	case age <= 15*time.Minute:
+		return "fresh"
+	case age <= 2*time.Hour:
+		return "recent"
+	case age <= 24*time.Hour:
+		return "stale"
+	default:
+		return "expired"
+	}
+}
+
+func pathValue(r *http.Request, name string) string {
+	value := r.PathValue(name)
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		return value
+	}
+	return decoded
 }
 
 func withJSON(next http.Handler) http.Handler {

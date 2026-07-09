@@ -126,5 +126,24 @@ spec:
                   format: date-time
                 message:
                   type: string
+                dryRunResult:
+                  type: object
+                  properties:
+                    passed:
+                      type: boolean
+                    message:
+                      type: string
+                diffSummary:
+                  type: string
+                approvalRef:
+                  type: string
+                runRef:
+                  type: string
+                verificationResult:
+                  type: string
+                rollbackRef:
+                  type: string
+                lastError:
+                  type: string
       subresources:
         status: {}

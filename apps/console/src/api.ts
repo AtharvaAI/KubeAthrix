@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AuditEvent, ChaosExperiment, ChaosExperimentRun, Dashboard, Finding, Integration, ModelProviderSettings, RemediationPlan } from "./types";
+import type { ApprovalRequest, AuditEvent, ChaosExperiment, ChaosExperimentRun, Dashboard, EvidenceBundle, Finding, Integration, IntegrationHealth, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationPreview, RemediationRun } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
@@ -32,6 +32,24 @@ export async function createRemediationPlan(findingId: string): Promise<Remediat
   });
 }
 
+export async function previewRemediationPlan(findingId: string): Promise<RemediationPreview> {
+  return request<RemediationPreview>("/remediation-plans/preview", {
+    method: "POST",
+    body: JSON.stringify({ findingId, requestedBy: "operator-console" })
+  });
+}
+
+export async function loadRemediationPlanDiff(planId: string): Promise<RemediationDiff> {
+  return request<RemediationDiff>(`/remediation-plans/${planId}/diff`);
+}
+
+export async function executeRemediationPlan(planId: string): Promise<RemediationRun> {
+  return request<RemediationRun>(`/remediation-plans/${planId}/execute`, {
+    method: "POST",
+    body: JSON.stringify({ actor: "operator-console" })
+  });
+}
+
 export async function approveRemediationPlan(planId: string): Promise<ApprovalRequest> {
   return request<ApprovalRequest>(`/approvals/approval-${planId}/approve`, {
     method: "POST",
@@ -54,6 +72,14 @@ export async function loadAuditEvents(): Promise<AuditEvent[]> {
 export async function loadIntegrations(): Promise<Integration[]> {
   const payload = await request<{ items: Integration[] }>("/integrations");
   return payload.items;
+}
+
+export async function loadIntegrationHealth(name: string): Promise<IntegrationHealth> {
+  return request<IntegrationHealth>(`/integrations/${encodeURIComponent(name)}/health`);
+}
+
+export async function loadEvidenceBundle(scope: string): Promise<EvidenceBundle> {
+  return request<EvidenceBundle>(`/evidence-bundles/${encodeURIComponent(scope)}`);
 }
 
 export async function loadExperiments(): Promise<ChaosExperiment[]> {

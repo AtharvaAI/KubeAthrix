@@ -26,16 +26,20 @@ import {
 import {
   approveRemediationPlan,
   createRemediationPlan,
+  executeRemediationPlan,
+  loadEvidenceBundle,
   loadAuditEvents,
   loadDashboard,
   loadExperiments,
   loadFindings,
+  loadIntegrationHealth,
   loadIntegrations,
   loadModelProviders,
+  loadRemediationPlanDiff,
   rejectRemediationPlan,
   startChaosExperiment
 } from "./api";
-import type { AuditEvent, ChaosExperiment, ChaosExperimentRun, ClusterInventory, Dashboard, Finding, Integration, ModelProviderSettings, RemediationPlan, ScanSummary, Severity } from "./types";
+import type { AuditEvent, ChaosExperiment, ChaosExperimentRun, ClusterInventory, Dashboard, EvidenceBundle, Finding, Integration, IntegrationHealth, ModelProviderSettings, RemediationDiff, RemediationPlan, ScanSummary, Severity } from "./types";
 
 type View = "dashboard" | "findings" | "fix-center" | "runtime" | "policy" | "experiments" | "audit" | "integrations" | "settings";
 
@@ -100,12 +104,15 @@ function App() {
   const [selectedFindingId, setSelectedFindingId] = useState("");
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [integrationHealth, setIntegrationHealth] = useState<Record<string, IntegrationHealth>>({});
   const [experiments, setExperiments] = useState<ChaosExperiment[]>([]);
   const [experimentRun, setExperimentRun] = useState<ChaosExperimentRun | null>(null);
   const [modelProviders, setModelProviders] = useState<ModelProviderSettings | null>(null);
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [plan, setPlan] = useState<RemediationPlan | null>(null);
+  const [planDiff, setPlanDiff] = useState<RemediationDiff | null>(null);
+  const [evidenceBundle, setEvidenceBundle] = useState<EvidenceBundle | null>(null);
   const [workflowMessage, setWorkflowMessage] = useState("No remediation has been submitted in this console session.");
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -128,6 +135,7 @@ function App() {
       setFindings(findingData);
       setAuditEvents(auditData);
       setIntegrations(integrationData);
+      void refreshIntegrationHealth(integrationData);
       setModelProviders(providerData);
       setExperiments(dashboardData.experiments?.length ? dashboardData.experiments : experimentData);
       setLoadError(null);
@@ -140,6 +148,21 @@ function App() {
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "API unavailable");
     }
+  }
+
+  async function refreshIntegrationHealth(items: Integration[]) {
+    const entries = await Promise.all(
+      items.map(async (integration) => {
+        try {
+          return [integration.name, await loadIntegrationHealth(integration.name)] as const;
+        } catch {
+          return [integration.name, null] as const;
+        }
+      })
+    );
+    setIntegrationHealth(
+      Object.fromEntries(entries.filter((entry): entry is readonly [string, IntegrationHealth] => entry[1] !== null))
+    );
   }
 
   const selectedFinding = useMemo(
@@ -159,7 +182,10 @@ function App() {
   async function handleCreatePlan(findingId: string) {
     try {
       const nextPlan = await createRemediationPlan(findingId);
+      const nextDiff = await loadRemediationPlanDiff(nextPlan.id);
       setPlan(nextPlan);
+      setPlanDiff(nextDiff);
+      setEvidenceBundle(null);
       setWorkflowMessage(
         nextPlan.approvalPolicy.required
           ? "Plan created and waiting for explicit approval."
@@ -169,6 +195,40 @@ function App() {
       setActiveView("fix-center");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : "Unable to create remediation plan.");
+    }
+  }
+
+  async function handleExecutePlan() {
+    if (!plan) {
+      return;
+    }
+    setApprovalBusy(true);
+    try {
+      const run = await executeRemediationPlan(plan.id);
+      setWorkflowMessage(`${run.id} is ${humanize(run.state)}; operator reconciliation has the typed action queue.`);
+      const [dashboardData, findingData, auditData] = await Promise.all([loadDashboard(), loadFindings(), loadAuditEvents()]);
+      setDashboard(dashboardData);
+      setFindings(findingData);
+      setAuditEvents(auditData);
+      setPlan((current) => current ? { ...current, status: "execution_requested" } : current);
+      setLoadError(null);
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : "Unable to request execution.");
+    } finally {
+      setApprovalBusy(false);
+    }
+  }
+
+  async function handleLoadEvidenceBundle() {
+    if (!plan) {
+      return;
+    }
+    try {
+      const bundle = await loadEvidenceBundle(plan.id);
+      setEvidenceBundle(bundle);
+      setWorkflowMessage(`Evidence bundle generated with ${bundle.summary.auditEvents ?? 0} audit event(s).`);
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : "Unable to load evidence bundle.");
     }
   }
 
@@ -303,13 +363,13 @@ function App() {
           />
         )}
         {!loadError && activeView === "fix-center" && (
-          <FixCenterView plan={plan} finding={selectedFinding} workflowMessage={workflowMessage} approvalBusy={approvalBusy} onCreatePlan={handleCreatePlan} onApproval={handleApproval} />
+          <FixCenterView plan={plan} diff={planDiff} evidenceBundle={evidenceBundle} finding={selectedFinding} workflowMessage={workflowMessage} approvalBusy={approvalBusy} onCreatePlan={handleCreatePlan} onApproval={handleApproval} onExecute={handleExecutePlan} onEvidenceBundle={handleLoadEvidenceBundle} />
         )}
         {!loadError && activeView === "runtime" && <RuntimeView findings={findings.filter((finding) => finding.source === "falco" || finding.source === "tetragon")} />}
         {!loadError && activeView === "policy" && dashboard && <PolicyView findings={findings} dashboard={dashboard} />}
         {!loadError && activeView === "experiments" && <ExperimentsView experiments={experiments} run={experimentRun} onStart={handleStartExperiment} />}
         {!loadError && activeView === "audit" && <AuditView events={auditEvents} />}
-        {!loadError && activeView === "integrations" && <IntegrationsView integrations={integrations} />}
+        {!loadError && activeView === "integrations" && <IntegrationsView integrations={integrations} health={integrationHealth} />}
         {!loadError && activeView === "settings" && <SettingsView providers={modelProviders} />}
       </main>
     </div>
@@ -350,6 +410,9 @@ function DashboardView({ dashboard, findings, onOpenFinding }: { dashboard: Dash
       <Metric label="Open critical" value={dashboard.openCritical} tone="danger" icon={AlertTriangle} />
       <Metric label="Pending approvals" value={dashboard.pendingApprovals} tone="warning" icon={UserCheck} />
       <Metric label="Mean risk score" value={Math.round(dashboard.meanRiskScore)} tone="signal" icon={Gauge} />
+      <Metric label="Safe fixes" value={dashboard.findingsWithSafeFix ?? 0} tone="signal" icon={Wrench} />
+      <Metric label="Verified fixes" value={dashboard.verifiedRemediations ?? 0} tone="signal" icon={CheckCircle2} />
+      <Metric label="Risk reduced" value={dashboard.riskReduced ?? 0} tone="neutral" icon={ShieldCheck} />
       <Metric label="Nodes ready" value={cluster.readyNodes ?? 0} tone="signal" icon={Activity} />
       <Metric label="Pods running" value={cluster.runningPods ?? 0} tone="neutral" icon={Database} />
       <Metric label="Namespaces" value={cluster.namespaces ?? 0} tone="neutral" icon={Network} />
@@ -391,6 +454,7 @@ function DashboardView({ dashboard, findings, onOpenFinding }: { dashboard: Dash
           <Fact label="Policy checks" value={scan.policyChecks ?? 0} />
           <Fact label="Permission checks" value={scan.permissionChecks ?? 0} />
           <Fact label="Compliance controls" value={`${scan.passedControls ?? 0}/${scan.complianceControls ?? 0} pass`} />
+          <Fact label="Evidence freshness" value={dashboard.evidenceFreshness ?? "unknown"} />
           <Fact label="NetworkPolicies" value={cluster.networkPolicies ?? 0} />
           <Fact label="ResourceQuotas" value={cluster.resourceQuotas ?? 0} />
           <Fact label="LimitRanges" value={cluster.limitRanges ?? 0} />
@@ -596,21 +660,30 @@ function FindingDetail({ finding, onCreatePlan }: { finding: Finding; onCreatePl
 
 function FixCenterView({
   plan,
+  diff,
+  evidenceBundle,
   finding,
   workflowMessage,
   approvalBusy,
   onCreatePlan,
-  onApproval
+  onApproval,
+  onExecute,
+  onEvidenceBundle
 }: {
   plan: RemediationPlan | null;
+  diff: RemediationDiff | null;
+  evidenceBundle: EvidenceBundle | null;
   finding?: Finding;
   workflowMessage: string;
   approvalBusy: boolean;
   onCreatePlan: (id: string) => void;
   onApproval: (decision: "approved" | "rejected") => void | Promise<void>;
+  onExecute: () => void | Promise<void>;
+  onEvidenceBundle: () => void | Promise<void>;
 }) {
   const planBadge = plan ? remediationBadge(plan) : null;
   const decisionLocked = plan?.status === "dry_run_verified" || plan?.status === "rejected";
+  const executeLocked = !plan || plan.approvalPolicy.required || plan.status === "rejected" || plan.status === "execution_requested";
   return (
     <section className="view-grid fix-grid">
       <div className="panel wide-panel">
@@ -704,6 +777,56 @@ function FixCenterView({
               <RotateCcw size={18} aria-hidden="true" />
               Reject
             </button>
+            <button className="primary-button" type="button" disabled={approvalBusy || executeLocked} onClick={() => void onExecute()}>
+              <PlayCircle size={18} aria-hidden="true" />
+              Execute
+            </button>
+            <button className="secondary-button" type="button" onClick={() => void onEvidenceBundle()}>
+              <Database size={18} aria-hidden="true" />
+              Evidence
+            </button>
+          </div>
+        </div>
+      )}
+
+      {diff && (
+        <div className="panel wide-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">{diff.mode}</p>
+              <h2>Typed diff</h2>
+            </div>
+          </div>
+          <p className="summary-text">{diff.summary}</p>
+          <div className="action-list">
+            {diff.manifests.map((manifest) => (
+              <div className="action-row" key={`${manifest.actionType}-${manifest.target.kind}-${manifest.target.name}`}>
+                <GitPullRequest size={18} aria-hidden="true" />
+                <div>
+                  <strong>{humanize(manifest.actionType)}</strong>
+                  <span>{manifest.diff}</span>
+                </div>
+                <code>{manifest.writeMode}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {evidenceBundle && (
+        <div className="panel wide-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Proof bundle</p>
+              <h2>{evidenceBundle.scope}</h2>
+            </div>
+            <span className="status-pill signal">{evidenceBundle.summary.auditEvents ?? 0} audit events</span>
+          </div>
+          <div className="fact-grid dense">
+            <Fact label="Findings" value={evidenceBundle.summary.findings ?? 0} />
+            <Fact label="Plans" value={evidenceBundle.summary.plans ?? 0} />
+            <Fact label="Runs" value={evidenceBundle.summary.runs ?? 0} />
+            <Fact label="Generated" value={new Date(evidenceBundle.generatedAt).toLocaleString()} />
           </div>
         </div>
       )}
@@ -960,22 +1083,43 @@ function AuditView({ events }: { events: AuditEvent[] }) {
   );
 }
 
-function IntegrationsView({ integrations }: { integrations: Integration[] }) {
+function IntegrationsView({ integrations, health }: { integrations: Integration[]; health: Record<string, IntegrationHealth> }) {
   return (
     <section className="integration-grid">
-      {integrations.map((integration) => (
-        <div className="panel integration-panel" key={integration.name}>
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">{integration.type}</p>
-              <h2>{integration.name}</h2>
+      {integrations.map((integration) => {
+        const details = health[integration.name];
+        return (
+          <div className="panel integration-panel" key={integration.name}>
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">{integration.type}</p>
+                <h2>{integration.name}</h2>
+              </div>
+              <span className={integration.enabled ? "status-dot online" : "status-dot"} />
             </div>
-            <span className={integration.enabled ? "status-dot online" : "status-dot"} />
+            <p className="summary-text">{integration.enabled ? "Enabled by Helm values and available to the normalizer." : "Not installed or disabled in Helm values."}</p>
+            <div className="fact-grid dense">
+              <Fact label="Health" value={details?.health ?? integration.status} />
+              <Fact label="Data last seen" value={details?.dataLastSeen ?? "unknown"} />
+            </div>
+            <div className="preflight-list">
+              {(details?.permissions ?? []).slice(0, 3).map((permission) => (
+                <span key={permission}>
+                  <CheckCircle2 size={15} aria-hidden="true" />
+                  {permission}
+                </span>
+              ))}
+              {(details?.setupGaps ?? []).slice(0, 2).map((gap) => (
+                <span key={gap}>
+                  <AlertTriangle size={15} aria-hidden="true" />
+                  {gap}
+                </span>
+              ))}
+            </div>
+            <span className="status-pill muted">{integration.status}</span>
           </div>
-          <p className="summary-text">{integration.enabled ? "Enabled by Helm values and available to the normalizer." : "Not installed or disabled in Helm values."}</p>
-          <span className="status-pill muted">{integration.status}</span>
-        </div>
-      ))}
+        );
+      })}
     </section>
   );
 }

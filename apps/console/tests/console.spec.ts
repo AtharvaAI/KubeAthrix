@@ -33,6 +33,10 @@ async function mockApi(page: Page) {
         openCritical: 1,
         pendingApprovals: 1,
         activeRemediations: 0,
+        verifiedRemediations: 0,
+        findingsWithSafeFix: 0,
+        riskReduced: 0,
+        evidenceFreshness: "fresh",
         meanRiskScore: 97,
         findingsBySeverity: { critical: 1 },
         findingsBySource: { correlator: 1 },
@@ -116,6 +120,21 @@ async function mockApi(page: Page) {
       }
     })
   );
+  await page.route("**/api/integrations/*/health", async (route) =>
+    route.fulfill({
+      json: {
+        name: "Kyverno",
+        type: "policy",
+        enabled: true,
+        status: "online",
+        health: "healthy",
+        dataLastSeen: "2026-07-08T12:00:00Z",
+        permissions: ["Read policyreports"],
+        setupGaps: [],
+        checkedAt: "2026-07-08T12:00:00Z"
+      }
+    })
+  );
   await page.route("**/api/settings/model-providers", async (route) =>
     route.fulfill({
       json: {
@@ -171,6 +190,24 @@ async function mockApi(page: Page) {
         approvalPolicy: { required: true, categories: ["network", "iam"] },
         status: "proposed",
         createdAt: "2026-07-08T12:00:00Z"
+      }
+    })
+  );
+  await page.route("**/api/remediation-plans/plan-finding-public-rbac-image-001/diff", async (route) =>
+    route.fulfill({
+      json: {
+        planId: "plan-finding-public-rbac-image-001",
+        mode: "typed-server-side-dry-run",
+        summary: "1 typed action prepared.",
+        manifests: [
+          {
+            actionType: "propose_security_hardening",
+            target: finding.resources[0],
+            writeMode: "gitops-proposal",
+            diff: "Prepare network policy proposal.",
+            manifest: ""
+          }
+        ]
       }
     })
   );

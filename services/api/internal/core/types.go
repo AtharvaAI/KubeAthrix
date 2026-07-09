@@ -104,6 +104,10 @@ type Dashboard struct {
 	OpenCritical         int                 `json:"openCritical"`
 	PendingApprovals     int                 `json:"pendingApprovals"`
 	ActiveRemediations   int                 `json:"activeRemediations"`
+	VerifiedRemediations int                 `json:"verifiedRemediations"`
+	FindingsWithSafeFix  int                 `json:"findingsWithSafeFix"`
+	RiskReduced          int                 `json:"riskReduced"`
+	EvidenceFreshness    string              `json:"evidenceFreshness"`
 	MeanRiskScore        float64             `json:"meanRiskScore"`
 	FindingsBySeverity   map[string]int      `json:"findingsBySeverity"`
 	FindingsBySource     map[string]int      `json:"findingsBySource"`
@@ -225,6 +229,53 @@ type RemediationPlan struct {
 	CreatedAt         time.Time      `json:"createdAt"`
 }
 
+type EvidenceCitation struct {
+	SourceID   string    `json:"sourceId"`
+	Summary    string    `json:"summary"`
+	Resource   string    `json:"resource"`
+	ObservedAt time.Time `json:"observedAt"`
+}
+
+type RemediationPreview struct {
+	FindingID             string             `json:"findingId"`
+	Summary               string             `json:"summary"`
+	Candidate             RemediationPlan    `json:"candidate"`
+	EvidenceCitations     []EvidenceCitation `json:"evidenceCitations"`
+	PromptEvidenceHash    string             `json:"promptEvidenceHash"`
+	DeterministicFallback bool               `json:"deterministicFallback"`
+	SafetyNotes           []string           `json:"safetyNotes"`
+	GeneratedAt           time.Time          `json:"generatedAt"`
+}
+
+type PlannedManifest struct {
+	ActionType string      `json:"actionType"`
+	Target     ResourceRef `json:"target"`
+	WriteMode  string      `json:"writeMode"`
+	Diff       string      `json:"diff"`
+	Manifest   string      `json:"manifest"`
+}
+
+type RemediationDiff struct {
+	PlanID    string            `json:"planId"`
+	Mode      string            `json:"mode"`
+	Summary   string            `json:"summary"`
+	Manifests []PlannedManifest `json:"manifests"`
+}
+
+type FindingGroup struct {
+	GroupBy         string    `json:"groupBy"`
+	Key             string    `json:"key"`
+	Count           int       `json:"count"`
+	MeanRiskScore   float64   `json:"meanRiskScore"`
+	HighestSeverity Severity  `json:"highestSeverity"`
+	Findings        []Finding `json:"findings"`
+}
+
+type FindingListResponse struct {
+	Items  []Finding      `json:"items"`
+	Groups []FindingGroup `json:"groups,omitempty"`
+}
+
 type ApprovalRequest struct {
 	ID              string         `json:"id"`
 	SubjectRef      string         `json:"subjectRef"`
@@ -253,6 +304,16 @@ type RemediationRun struct {
 	RollbackMetadata string         `json:"rollbackMetadata"`
 	CreatedAt        time.Time      `json:"createdAt"`
 	UpdatedAt        time.Time      `json:"updatedAt"`
+}
+
+type EvidenceBundle struct {
+	Scope       string            `json:"scope"`
+	GeneratedAt time.Time         `json:"generatedAt"`
+	Summary     map[string]int    `json:"summary"`
+	Findings    []Finding         `json:"findings"`
+	Plans       []RemediationPlan `json:"plans"`
+	Runs        []RemediationRun  `json:"runs"`
+	AuditEvents []AuditEvent      `json:"auditEvents"`
 }
 
 type Exception struct {
@@ -301,4 +362,16 @@ type Integration struct {
 	Type    string `json:"type"`
 	Enabled bool   `json:"enabled"`
 	Status  string `json:"status"`
+}
+
+type IntegrationHealth struct {
+	Name         string    `json:"name"`
+	Type         string    `json:"type"`
+	Enabled      bool      `json:"enabled"`
+	Status       string    `json:"status"`
+	Health       string    `json:"health"`
+	DataLastSeen string    `json:"dataLastSeen"`
+	Permissions  []string  `json:"permissions"`
+	SetupGaps    []string  `json:"setupGaps"`
+	CheckedAt    time.Time `json:"checkedAt"`
 }

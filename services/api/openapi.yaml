@@ -20,7 +20,7 @@ paths:
           description: Dashboard metrics, cluster inventory, compliance controls, and experiment templates
   /findings:
     get:
-      summary: List normalized findings
+      summary: List normalized findings, optionally grouped by workload, namespace, or owner
       parameters:
         - in: query
           name: severity
@@ -34,9 +34,14 @@ paths:
         - in: query
           name: q
           schema: { type: string }
+        - in: query
+          name: groupBy
+          schema:
+            type: string
+            enum: [workload, namespace, owner]
       responses:
         "200":
-          description: Finding list
+          description: Finding list with optional grouping
   /findings/{id}:
     get:
       summary: Get finding detail
@@ -50,6 +55,23 @@ paths:
           description: Finding detail
         "404":
           description: Finding not found
+  /remediation-plans/preview:
+    post:
+      summary: Preview a strict-schema remediation candidate without persisting it
+      description: Uses deterministic fallback planning with evidence citations and prompt/evidence hash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [findingId]
+              properties:
+                findingId: { type: string }
+                requestedBy: { type: string }
+      responses:
+        "200":
+          description: Remediation preview
   /remediation-plans:
     post:
       summary: Create a typed remediation plan
@@ -67,6 +89,38 @@ paths:
       responses:
         "201":
           description: Plan created
+  /remediation-plans/{id}/diff:
+    get:
+      summary: Get the typed diff and proposed manifests for a remediation plan
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Remediation diff
+  /remediation-plans/{id}/execute:
+    post:
+      summary: Request execution for a typed remediation plan whose approval gate is cleared
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actor: { type: string }
+      responses:
+        "202":
+          description: Execution requested
+        "400":
+          description: Plan still requires approval or is not executable
   /remediation-runs/{id}:
     get:
       summary: Read remediation run state
@@ -96,12 +150,34 @@ paths:
       responses:
         "200":
           description: Audit event list
+  /evidence-bundles/{scope}:
+    get:
+      summary: Export an evidence bundle by finding, plan, source, group, or all
+      parameters:
+        - in: path
+          name: scope
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Evidence bundle
   /integrations:
     get:
       summary: List engine and notification integrations
       responses:
         "200":
           description: Integration list
+  /integrations/{name}/health:
+    get:
+      summary: Read integration health, permissions, last-seen data, and setup gaps
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Integration health
   /experiments:
     get:
       summary: List predefined chaos experiment templates

@@ -43,6 +43,10 @@ export interface Dashboard {
   openCritical: number;
   pendingApprovals: number;
   activeRemediations: number;
+  verifiedRemediations: number;
+  findingsWithSafeFix: number;
+  riskReduced: number;
+  evidenceFreshness: string;
   meanRiskScore: number;
   findingsBySeverity: Record<string, number>;
   findingsBySource: Record<string, number>;
@@ -152,6 +156,39 @@ export interface RemediationPlan {
   createdAt: string;
 }
 
+export interface EvidenceCitation {
+  sourceId: string;
+  summary: string;
+  resource: string;
+  observedAt: string;
+}
+
+export interface RemediationPreview {
+  findingId: string;
+  summary: string;
+  candidate: RemediationPlan;
+  evidenceCitations: EvidenceCitation[];
+  promptEvidenceHash: string;
+  deterministicFallback: boolean;
+  safetyNotes: string[];
+  generatedAt: string;
+}
+
+export interface PlannedManifest {
+  actionType: string;
+  target: ResourceRef;
+  writeMode: string;
+  diff: string;
+  manifest: string;
+}
+
+export interface RemediationDiff {
+  planId: string;
+  mode: string;
+  summary: string;
+  manifests: PlannedManifest[];
+}
+
 export interface ApprovalRequest {
   id: string;
   subjectRef: string;
@@ -174,11 +211,44 @@ export interface AuditEvent {
   createdAt: string;
 }
 
+export interface EvidenceBundle {
+  scope: string;
+  generatedAt: string;
+  summary: Record<string, number>;
+  findings: Finding[];
+  plans: RemediationPlan[];
+  runs: RemediationRun[];
+  auditEvents: AuditEvent[];
+}
+
+export interface RemediationRun {
+  id: string;
+  planId: string;
+  state: string;
+  actionStatuses: Array<{ actionType: string; state: string; message: string }>;
+  validationResult: string;
+  rollbackMetadata: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Integration {
   name: string;
   type: string;
   enabled: boolean;
   status: string;
+}
+
+export interface IntegrationHealth {
+  name: string;
+  type: string;
+  enabled: boolean;
+  status: string;
+  health: string;
+  dataLastSeen: string;
+  permissions: string[];
+  setupGaps: string[];
+  checkedAt: string;
 }
 
 export interface ModelProviderSettings {

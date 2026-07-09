@@ -6,6 +6,7 @@ import (
 
 	"github.com/atharvaai/kubeathrix/operator/controllers"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -23,6 +24,13 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		ctrl.Log.Error(err, "unable to add Kubernetes types to scheme")
+		os.Exit(1)
+	}
+	scheme.AddKnownTypeWithName(controllers.FindingGVK, controllers.NewFindingObject(ctrl.Request{}.NamespacedName))
+	scheme.AddKnownTypeWithName(controllers.RemediationPlanGVK, controllers.NewRemediationPlanObject(ctrl.Request{}.NamespacedName))
+	scheme.AddKnownTypeWithName(controllers.RemediationRunGVK, controllers.NewRemediationRunObject(ctrl.Request{}.NamespacedName))
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
@@ -39,6 +47,14 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create finding controller")
+		os.Exit(1)
+	}
+
+	if err := (&controllers.RemediationPlanReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to create remediation plan controller")
 		os.Exit(1)
 	}
 

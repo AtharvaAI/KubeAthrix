@@ -62,6 +62,8 @@ spec:
                   type: string
                 rollbackMetadata:
                   type: string
+                lastError:
+                  type: string
                 observedGeneration:
                   type: integer
                   format: int64

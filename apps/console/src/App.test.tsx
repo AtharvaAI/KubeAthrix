@@ -34,6 +34,10 @@ function dashboardPayload() {
     openCritical: 1,
     pendingApprovals: 1,
     activeRemediations: 0,
+    verifiedRemediations: 0,
+    findingsWithSafeFix: 0,
+    riskReduced: 0,
+    evidenceFreshness: "fresh",
     meanRiskScore: 97,
     findingsBySeverity: { critical: 1 },
     findingsBySource: { "kubeathrix-scan": 1 },
@@ -139,11 +143,17 @@ function mockApi() {
       if (url.endsWith("/api/integrations")) {
         return Promise.resolve(Response.json({ items: [{ name: "Kyverno", type: "policy", enabled: true, status: "configured" }] }));
       }
+      if (url.endsWith("/api/integrations/Kyverno/health")) {
+        return Promise.resolve(Response.json({ name: "Kyverno", type: "policy", enabled: true, status: "configured", health: "healthy", dataLastSeen: "2026-07-08T12:00:00Z", permissions: ["Read policyreports"], setupGaps: [], checkedAt: "2026-07-08T12:00:00Z" }));
+      }
       if (url.endsWith("/api/settings/model-providers")) {
         return Promise.resolve(Response.json({ providers: [{ name: "primary", type: "openai-compatible", model: "gpt-5", apiKeySecretRef: { name: "kubeathrix-llm", key: "api-key" } }] }));
       }
       if (url.endsWith("/api/experiments")) return Promise.resolve(Response.json({ items: dashboardPayload().experiments }));
       if (url.endsWith("/api/remediation-plans") && method === "POST") return Promise.resolve(Response.json(planPayload(), { status: 201 }));
+      if (url.endsWith("/api/remediation-plans/plan-finding-public-rbac-image-001/diff")) {
+        return Promise.resolve(Response.json({ planId: "plan-finding-public-rbac-image-001", mode: "typed-server-side-dry-run", summary: "1 typed action prepared.", manifests: [{ actionType: "propose_security_hardening", target: finding.resources[0], writeMode: "gitops-proposal", diff: "Prepare network policy proposal.", manifest: "" }] }));
+      }
       return Promise.resolve(Response.json({ error: "not found" }, { status: 404 }));
     })
   );

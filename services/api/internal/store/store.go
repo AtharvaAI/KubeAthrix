@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -29,13 +31,19 @@ type Repository interface {
 	Dashboard(ctx context.Context) (core.Dashboard, error)
 	ListFindings(ctx context.Context, filter FindingFilter) ([]core.Finding, error)
 	GetFinding(ctx context.Context, id string) (core.Finding, error)
+	PreviewRemediationPlan(ctx context.Context, findingID, requester string) (core.RemediationPreview, error)
 	CreateRemediationPlan(ctx context.Context, findingID, requester string) (core.RemediationPlan, error)
 	CreateRemediationPlanFromFinding(ctx context.Context, finding core.Finding, requester string) (core.RemediationPlan, error)
+	GetRemediationPlan(ctx context.Context, id string) (core.RemediationPlan, error)
+	GetRemediationPlanDiff(ctx context.Context, id string) (core.RemediationDiff, error)
+	ExecuteRemediationPlan(ctx context.Context, id, actor string) (core.RemediationRun, error)
 	GetRemediationRun(ctx context.Context, id string) (core.RemediationRun, error)
 	Approve(ctx context.Context, approvalID, actor, reason string) (core.ApprovalRequest, error)
 	Reject(ctx context.Context, approvalID, actor, reason string) (core.ApprovalRequest, error)
 	ListAuditEvents(ctx context.Context) ([]core.AuditEvent, error)
+	EvidenceBundle(ctx context.Context, scope string) (core.EvidenceBundle, error)
 	ListIntegrations(ctx context.Context) ([]core.Integration, error)
+	IntegrationHealth(ctx context.Context, name string) (core.IntegrationHealth, error)
 	GetModelProviders(ctx context.Context) (core.ModelProviderSettings, error)
 	SaveModelProviders(ctx context.Context, settings core.ModelProviderSettings) (core.ModelProviderSettings, error)
 }
@@ -150,15 +158,27 @@ func (s *MemoryStore) Dashboard(ctx context.Context) (core.Dashboard, error) {
 		if finding.Status == core.FindingRemediating {
 			dashboard.ActiveRemediations++
 		}
+		if finding.Fixability == core.FixabilityDeterministic || finding.Fixability == core.FixabilityGated {
+			dashboard.FindingsWithSafeFix++
+		}
+		if finding.Status == core.FindingResolved {
+			dashboard.RiskReduced += finding.RiskScore
+		}
 		for _, resource := range finding.Resources {
 			if resource.Namespace != "" {
 				namespaces[resource.Namespace] = struct{}{}
 			}
 		}
 	}
+	for _, run := range s.runs {
+		if run.State == core.RunSucceeded {
+			dashboard.VerifiedRemediations++
+		}
+	}
 	if dashboard.TotalFindings > 0 {
 		dashboard.MeanRiskScore = float64(scoreTotal) / float64(dashboard.TotalFindings)
 	}
+	dashboard.EvidenceFreshness = evidenceFreshness(s.findings, s.clock().UTC())
 	if len(namespaces) > dashboard.ProtectedNamespaces {
 		dashboard.ProtectedNamespaces = len(namespaces)
 	}
@@ -213,6 +233,22 @@ func (s *MemoryStore) GetFinding(ctx context.Context, id string) (core.Finding, 
 	return finding, nil
 }
 
+func (s *MemoryStore) PreviewRemediationPlan(ctx context.Context, findingID, requester string) (core.RemediationPreview, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return core.RemediationPreview{}, err
+	}
+	finding, ok := s.findings[findingID]
+	if !ok {
+		return core.RemediationPreview{}, ErrNotFound
+	}
+	now := s.clock().UTC()
+	plan := buildRemediationPlan(finding, requester, now, 0)
+	plan.ID = "preview-" + finding.ID
+	return buildRemediationPreview(finding, plan, now), nil
+}
+
 func (s *MemoryStore) CreateRemediationPlan(ctx context.Context, findingID, requester string) (core.RemediationPlan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -250,32 +286,9 @@ func (s *MemoryStore) createRemediationPlanLocked(finding core.Finding, requeste
 
 	now := s.clock().UTC()
 	s.seq++
-	planID := fmt.Sprintf("plan-%s-%03d", finding.ID, s.seq)
-	action := typedActionForFinding(finding)
-	plan := core.RemediationPlan{
-		ID:        planID,
-		FindingID: finding.ID,
-		RootCause: "KubeAthrix correlated scanner and Kubernetes evidence into a bounded remediation candidate. The model may explain the plan, but execution is restricted to typed actions.",
-		Actions:   []core.TypedAction{action},
-		RiskTier:  riskTierForFixability(finding.Fixability),
-		DryRunResult: core.DryRunResult{
-			Passed:  finding.Fixability != core.FixabilityInformational,
-			Message: "server-side dry-run and policy validation are queued for the remediator controller",
-		},
-		VerificationSteps: []string{
-			"Confirm the targeted resources still match the finding evidence.",
-			"Run Kubernetes server-side dry-run before writing changes.",
-			"Re-scan the source engine and update finding status.",
-		},
-		RollbackSteps: []string{
-			"Use the stored pre-change object snapshot for a typed revert.",
-			"Re-run policy validation and record rollback status.",
-		},
-		ApprovalPolicy: approvalPolicyForFinding(finding),
-		Status:         "proposed",
-		CreatedAt:      now,
-	}
+	plan := buildRemediationPlan(finding, requester, now, s.seq)
 	s.plans[plan.ID] = plan
+	action := primaryAction(plan)
 
 	runState := core.RunDryRunPassed
 	if plan.ApprovalPolicy.Required {
@@ -293,12 +306,10 @@ func (s *MemoryStore) createRemediationPlanLocked(finding core.Finding, requeste
 		s.approvals[approval.ID] = approval
 	}
 	run := core.RemediationRun{
-		ID:     "run-" + plan.ID,
-		PlanID: plan.ID,
-		State:  runState,
-		ActionStatuses: []core.ActionStatus{
-			{ActionType: action.Type, State: string(runState), Message: "typed action created; no arbitrary command execution path exists"},
-		},
+		ID:               "run-" + plan.ID,
+		PlanID:           plan.ID,
+		State:            runState,
+		ActionStatuses:   actionStatuses(plan.Actions, string(runState), "typed action created; no arbitrary command execution path exists"),
 		ValidationResult: "pending controller validation",
 		RollbackMetadata: "pre-change snapshot will be captured by remediator before write",
 		CreatedAt:        now,
@@ -314,6 +325,83 @@ func (s *MemoryStore) createRemediationPlanLocked(finding core.Finding, requeste
 		CreatedAt: now,
 	})
 	return plan, nil
+}
+
+func (s *MemoryStore) GetRemediationPlan(ctx context.Context, id string) (core.RemediationPlan, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return core.RemediationPlan{}, err
+	}
+	plan, ok := s.plans[id]
+	if !ok {
+		return core.RemediationPlan{}, ErrNotFound
+	}
+	return plan, nil
+}
+
+func (s *MemoryStore) GetRemediationPlanDiff(ctx context.Context, id string) (core.RemediationDiff, error) {
+	plan, err := s.GetRemediationPlan(ctx, id)
+	if err != nil {
+		return core.RemediationDiff{}, err
+	}
+	return buildRemediationDiff(plan), nil
+}
+
+func (s *MemoryStore) ExecuteRemediationPlan(ctx context.Context, id, actor string) (core.RemediationRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return core.RemediationRun{}, err
+	}
+	if actor == "" {
+		actor = "operator-console"
+	}
+	plan, ok := s.plans[id]
+	if !ok {
+		return core.RemediationRun{}, ErrNotFound
+	}
+	if plan.ApprovalPolicy.Required {
+		return core.RemediationRun{}, fmt.Errorf("%w: approval is still required", ErrInvalid)
+	}
+	if plan.Status == "rejected" {
+		return core.RemediationRun{}, fmt.Errorf("%w: rejected plan cannot be executed", ErrInvalid)
+	}
+	now := s.clock().UTC()
+	plan.Status = "execution_requested"
+	plan.DryRunResult = core.DryRunResult{
+		Passed:  true,
+		Message: "server-side dry-run passed; operator reconciliation has been requested",
+	}
+	s.plans[plan.ID] = plan
+
+	runID := "run-" + plan.ID
+	run, ok := s.runs[runID]
+	if !ok {
+		run = core.RemediationRun{ID: runID, PlanID: plan.ID, CreatedAt: now}
+	}
+	run.State = core.RunRunning
+	run.UpdatedAt = now
+	run.ValidationResult = "operator reconciliation requested; typed actions only"
+	run.RollbackMetadata = "pre-change snapshots are required before mutating actions"
+	run.ActionStatuses = actionStatuses(plan.Actions, "running", "execution requested for typed operator reconciliation")
+	s.runs[run.ID] = run
+
+	if finding, ok := s.findings[plan.FindingID]; ok {
+		finding.Status = core.FindingRemediating
+		finding.RemediationState = "execution_requested"
+		finding.UpdatedAt = now
+		s.findings[finding.ID] = finding
+	}
+	s.auditEvents = append(s.auditEvents, core.AuditEvent{
+		ID:        fmt.Sprintf("audit-%03d", len(s.auditEvents)+1),
+		Actor:     actor,
+		Action:    "remediation.execution.requested",
+		Subject:   plan.ID,
+		Message:   "Execution requested for typed remediation plan",
+		CreatedAt: now,
+	})
+	return run, nil
 }
 
 func (s *MemoryStore) GetRemediationRun(ctx context.Context, id string) (core.RemediationRun, error) {
@@ -353,6 +441,54 @@ func (s *MemoryStore) ListAuditEvents(ctx context.Context) ([]core.AuditEvent, e
 	return events, nil
 }
 
+func (s *MemoryStore) EvidenceBundle(ctx context.Context, scope string) (core.EvidenceBundle, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return core.EvidenceBundle{}, err
+	}
+	if scope == "" {
+		scope = "all"
+	}
+	bundle := core.EvidenceBundle{
+		Scope:       scope,
+		GeneratedAt: s.clock().UTC(),
+		Summary:     map[string]int{},
+	}
+	for _, finding := range s.findings {
+		if scopeMatchesFinding(scope, finding) {
+			bundle.Findings = append(bundle.Findings, finding)
+		}
+	}
+	for _, plan := range s.plans {
+		if scope == "all" || scope == plan.ID || scope == plan.FindingID || hasFinding(bundle.Findings, plan.FindingID) {
+			bundle.Plans = append(bundle.Plans, plan)
+		}
+	}
+	for _, run := range s.runs {
+		if scope == "all" || scope == run.ID || scope == run.PlanID || hasPlan(bundle.Plans, run.PlanID) {
+			bundle.Runs = append(bundle.Runs, run)
+		}
+	}
+	for _, event := range s.auditEvents {
+		if scope == "all" || event.Subject == scope || hasPlan(bundle.Plans, event.Subject) || hasRun(bundle.Runs, event.Subject) {
+			bundle.AuditEvents = append(bundle.AuditEvents, event)
+		}
+	}
+	sort.Slice(bundle.Findings, func(i, j int) bool { return bundle.Findings[i].RiskScore > bundle.Findings[j].RiskScore })
+	sort.Slice(bundle.Plans, func(i, j int) bool { return bundle.Plans[i].CreatedAt.After(bundle.Plans[j].CreatedAt) })
+	sort.Slice(bundle.Runs, func(i, j int) bool { return bundle.Runs[i].UpdatedAt.After(bundle.Runs[j].UpdatedAt) })
+	sort.Slice(bundle.AuditEvents, func(i, j int) bool { return bundle.AuditEvents[i].CreatedAt.After(bundle.AuditEvents[j].CreatedAt) })
+	bundle.Summary["findings"] = len(bundle.Findings)
+	bundle.Summary["plans"] = len(bundle.Plans)
+	bundle.Summary["runs"] = len(bundle.Runs)
+	bundle.Summary["auditEvents"] = len(bundle.AuditEvents)
+	if len(bundle.Findings) == 0 && len(bundle.Plans) == 0 && len(bundle.Runs) == 0 && len(bundle.AuditEvents) == 0 && scope != "all" {
+		return core.EvidenceBundle{}, ErrNotFound
+	}
+	return bundle, nil
+}
+
 func (s *MemoryStore) ListIntegrations(ctx context.Context) ([]core.Integration, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -360,6 +496,20 @@ func (s *MemoryStore) ListIntegrations(ctx context.Context) ([]core.Integration,
 		return nil, err
 	}
 	return append([]core.Integration(nil), s.integrations...), nil
+}
+
+func (s *MemoryStore) IntegrationHealth(ctx context.Context, name string) (core.IntegrationHealth, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return core.IntegrationHealth{}, err
+	}
+	for _, integration := range s.integrations {
+		if strings.EqualFold(integration.Name, name) || strings.EqualFold(safeID(integration.Name), safeID(name)) {
+			return buildIntegrationHealth(integration, s.findings, s.clock().UTC()), nil
+		}
+	}
+	return core.IntegrationHealth{}, ErrNotFound
 }
 
 func (s *MemoryStore) GetModelProviders(ctx context.Context) (core.ModelProviderSettings, error) {
@@ -483,32 +633,271 @@ func (s *MemoryStore) decide(ctx context.Context, approvalID, actor, reason stri
 	return approval, nil
 }
 
-func typedActionForFinding(finding core.Finding) core.TypedAction {
+func buildRemediationPlan(finding core.Finding, requester string, now time.Time, seq int) core.RemediationPlan {
+	planID := fmt.Sprintf("plan-%s-%03d", finding.ID, seq)
+	if seq == 0 {
+		planID = "preview-" + finding.ID
+	}
+	return core.RemediationPlan{
+		ID:        planID,
+		FindingID: finding.ID,
+		RootCause: "KubeAthrix correlated scanner and Kubernetes evidence into a bounded remediation candidate. The model may explain and rank evidence, but execution is restricted to typed actions with dry-run, approvals, verification, and rollback metadata.",
+		Actions:   typedActionsForFinding(finding),
+		RiskTier:  riskTierForFixability(finding.Fixability),
+		DryRunResult: core.DryRunResult{
+			Passed:  finding.Fixability != core.FixabilityInformational,
+			Message: "server-side dry-run and policy validation are queued for the remediator controller",
+		},
+		VerificationSteps: verificationStepsForFinding(finding),
+		RollbackSteps: []string{
+			"Use the stored pre-change object snapshot for a typed revert.",
+			"Re-run policy validation and source-engine scans after rollback.",
+			"Record rollback status in the remediation run and audit trail.",
+		},
+		ApprovalPolicy: approvalPolicyForFinding(finding),
+		Status:         "proposed",
+		CreatedAt:      now,
+	}
+}
+
+func BuildRemediationPlan(finding core.Finding, requester string, now time.Time, seq int) core.RemediationPlan {
+	return buildRemediationPlan(finding, requester, now, seq)
+}
+
+func typedActionsForFinding(finding core.Finding) []core.TypedAction {
 	target := core.ResourceRef{APIVersion: "v1", Kind: "Namespace", Name: "default"}
 	if len(finding.Resources) > 0 {
 		target = finding.Resources[0]
 	}
-	action := core.TypedAction{
+	actions := []core.TypedAction{}
+	text := strings.ToLower(finding.ID + " " + finding.Title + " " + finding.BlastRadius + " " + finding.RecommendedAction)
+
+	if strings.Contains(text, "resourcequota") || strings.Contains(text, "limitrange") || strings.Contains(text, "resource governance") || strings.Contains(text, "resources") {
+		actions = append(actions, core.TypedAction{
+			Type:        "apply_resource_governance",
+			Target:      namespaceTarget(target),
+			Description: "Apply scoped ResourceQuota and LimitRange defaults",
+			Params:      map[string]string{"quotaProfile": "team-defaults", "dryRun": "required"},
+		})
+	}
+	if strings.Contains(text, "pod security") || strings.Contains(text, "privileged pod security") {
+		actions = append(actions, core.TypedAction{
+			Type:        "patch_pod_security_labels",
+			Target:      namespaceTarget(target),
+			Description: "Patch namespace Pod Security admission labels after tier validation",
+			Params:      map[string]string{"enforce": "baseline", "audit": "restricted", "dryRun": "required"},
+		})
+	}
+	if strings.Contains(text, "readiness") || strings.Contains(text, "liveness") || strings.Contains(text, "probe") {
+		actions = append(actions, core.TypedAction{
+			Type:        "patch_workload_probes",
+			Target:      workloadTarget(target),
+			Description: "Prepare readiness and liveness probe patches behind approval",
+			Params:      map[string]string{"serverSideApply": "true", "dryRun": "required", "defaultPath": "/healthz"},
+		})
+	}
+	if strings.Contains(text, "requests") || strings.Contains(text, "limits") || strings.Contains(text, "mutable image") {
+		actions = append(actions, core.TypedAction{
+			Type:        "patch_workload_resources",
+			Target:      workloadTarget(target),
+			Description: "Prepare bounded workload resource defaults or recommendation-only image pinning guidance",
+			Params:      map[string]string{"cpuRequest": "100m", "memoryRequest": "128Mi", "cpuLimit": "500m", "memoryLimit": "512Mi", "dryRun": "required"},
+		})
+	}
+	if strings.Contains(text, "pdb") || strings.Contains(text, "poddisruptionbudget") || strings.Contains(text, "disruption") {
+		actions = append(actions, core.TypedAction{
+			Type:        "create_pdb",
+			Target:      workloadTarget(target),
+			Description: "Create a scoped PodDisruptionBudget for replicated workloads after approval",
+			Params:      map[string]string{"minAvailable": "1", "dryRun": "required"},
+		})
+	}
+	if strings.Contains(text, "networkpolicy") || strings.Contains(text, "loadbalancer") || strings.Contains(text, "nodeport") || strings.Contains(text, "externalip") || strings.Contains(text, "ingress") {
+		actions = append(actions, core.TypedAction{
+			Type:        "propose_network_policy",
+			Target:      namespaceTarget(target),
+			Description: "Prepare default-deny and explicit allow NetworkPolicy manifests for review or GitOps PR",
+			Params:      map[string]string{"mode": "proposal", "requiresApproval": "true"},
+		})
+	}
+	if len(actions) == 0 {
+		actionType := "explain_only"
+		description := "Document finding and require human triage"
+		if finding.Fixability == core.FixabilityHumanOnly {
+			actionType = "propose_security_hardening"
+			description = "Prepare network, RBAC, and image trust patches for explicit approval"
+		}
+		actions = append(actions, core.TypedAction{
+			Type:        actionType,
+			Target:      target,
+			Description: description,
+			Params:      map[string]string{"findingId": finding.ID, "dryRun": "required"},
+		})
+	}
+	return dedupeActions(actions)
+}
+
+func namespaceTarget(target core.ResourceRef) core.ResourceRef {
+	if target.Kind == "Namespace" {
+		return core.ResourceRef{APIVersion: "v1", Kind: "Namespace", Name: target.Name}
+	}
+	if target.Namespace != "" {
+		return core.ResourceRef{APIVersion: "v1", Kind: "Namespace", Name: target.Namespace}
+	}
+	return target
+}
+
+func workloadTarget(target core.ResourceRef) core.ResourceRef {
+	switch target.Kind {
+	case "Deployment", "StatefulSet", "DaemonSet":
+		return target
+	default:
+		return target
+	}
+}
+
+func dedupeActions(actions []core.TypedAction) []core.TypedAction {
+	seen := map[string]bool{}
+	result := make([]core.TypedAction, 0, len(actions))
+	for _, action := range actions {
+		key := action.Type + "|" + action.Target.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, action)
+	}
+	return result
+}
+
+func primaryAction(plan core.RemediationPlan) core.TypedAction {
+	if len(plan.Actions) > 0 {
+		return plan.Actions[0]
+	}
+	return core.TypedAction{
 		Type:        "explain_only",
-		Target:      target,
+		Target:      core.ResourceRef{APIVersion: "v1", Kind: "Namespace", Name: "default"},
 		Description: "Document finding and require human triage",
-		Params:      map[string]string{"findingId": finding.ID},
 	}
-	switch finding.Fixability {
-	case core.FixabilityDeterministic:
-		action.Type = "apply_resource_governance"
-		action.Description = "Apply scoped ResourceQuota and LimitRange defaults"
-		action.Params = map[string]string{"quotaProfile": "team-defaults", "dryRun": "required"}
-	case core.FixabilityGated:
-		action.Type = "patch_workload_reliability"
-		action.Description = "Patch probes and disruption controls after approval"
-		action.Params = map[string]string{"serverSideApply": "true", "dryRun": "required"}
-	case core.FixabilityHumanOnly:
-		action.Type = "propose_security_hardening"
-		action.Description = "Prepare network, RBAC, and image trust patches for explicit approval"
-		action.Params = map[string]string{"requiresApproval": "true", "dryRun": "required"}
+}
+
+func verificationStepsForFinding(finding core.Finding) []string {
+	steps := []string{
+		"Confirm the targeted resources still match the finding evidence.",
+		"Run Kubernetes server-side dry-run before writing changes.",
+		"Re-scan the source engine and update finding status.",
 	}
-	return action
+	if finding.Source == "falco" || finding.Source == "tetragon" {
+		steps = append(steps, "Correlate runtime event timing with deployment, user, and audit logs.")
+	}
+	return steps
+}
+
+func actionStatuses(actions []core.TypedAction, state, message string) []core.ActionStatus {
+	statuses := make([]core.ActionStatus, 0, len(actions))
+	for _, action := range actions {
+		statuses = append(statuses, core.ActionStatus{ActionType: action.Type, State: state, Message: message})
+	}
+	if len(statuses) == 0 {
+		statuses = append(statuses, core.ActionStatus{ActionType: "explain_only", State: state, Message: message})
+	}
+	return statuses
+}
+
+func buildRemediationPreview(finding core.Finding, plan core.RemediationPlan, now time.Time) core.RemediationPreview {
+	return core.RemediationPreview{
+		FindingID:             finding.ID,
+		Summary:               fmt.Sprintf("Strict-schema deterministic preview for %s with %d typed action(s).", finding.Title, len(plan.Actions)),
+		Candidate:             plan,
+		EvidenceCitations:     evidenceCitations(finding),
+		PromptEvidenceHash:    promptEvidenceHash(finding),
+		DeterministicFallback: true,
+		SafetyNotes: []string{
+			"Model output must match the typed remediation schema before it can be stored.",
+			"No raw shell, SSH, or kubectl command execution is accepted.",
+			"Tier B/C/D changes remain approval gated and dry-run first.",
+		},
+		GeneratedAt: now,
+	}
+}
+
+func BuildRemediationPreview(finding core.Finding, plan core.RemediationPlan, now time.Time) core.RemediationPreview {
+	return buildRemediationPreview(finding, plan, now)
+}
+
+func evidenceCitations(finding core.Finding) []core.EvidenceCitation {
+	citations := make([]core.EvidenceCitation, 0, len(finding.Evidence))
+	resource := ""
+	if len(finding.Resources) > 0 {
+		resource = finding.Resources[0].String()
+	}
+	for _, evidence := range finding.Evidence {
+		citations = append(citations, core.EvidenceCitation{
+			SourceID:   evidence.SourceID,
+			Summary:    evidence.Summary,
+			Resource:   resource,
+			ObservedAt: evidence.ObservedAt,
+		})
+	}
+	return citations
+}
+
+func promptEvidenceHash(finding core.Finding) string {
+	hash := sha256.New()
+	hash.Write([]byte(finding.ID))
+	hash.Write([]byte(finding.Title))
+	hash.Write([]byte(finding.BlastRadius))
+	for _, evidence := range finding.Evidence {
+		hash.Write([]byte(evidence.SourceID))
+		hash.Write([]byte(evidence.Summary))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func buildRemediationDiff(plan core.RemediationPlan) core.RemediationDiff {
+	diff := core.RemediationDiff{
+		PlanID:  plan.ID,
+		Mode:    "typed-server-side-dry-run",
+		Summary: fmt.Sprintf("%d typed action(s) prepared; no arbitrary command path is available.", len(plan.Actions)),
+	}
+	for _, action := range plan.Actions {
+		diff.Manifests = append(diff.Manifests, plannedManifest(action))
+	}
+	return diff
+}
+
+func BuildRemediationDiff(plan core.RemediationPlan) core.RemediationDiff {
+	return buildRemediationDiff(plan)
+}
+
+func plannedManifest(action core.TypedAction) core.PlannedManifest {
+	switch action.Type {
+	case "apply_resource_governance":
+		namespace := action.Target.Name
+		return core.PlannedManifest{
+			ActionType: action.Type,
+			Target:     action.Target,
+			WriteMode:  "direct-tier-a",
+			Diff:       fmt.Sprintf("Create or update ResourceQuota/kubeathrix-defaults and LimitRange/kubeathrix-defaults in namespace %s.", namespace),
+			Manifest:   fmt.Sprintf("apiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: kubeathrix-defaults\n  namespace: %s\nspec:\n  hard:\n    requests.cpu: \"4\"\n    requests.memory: 8Gi\n---\napiVersion: v1\nkind: LimitRange\nmetadata:\n  name: kubeathrix-defaults\n  namespace: %s\nspec:\n  limits:\n    - type: Container\n      defaultRequest:\n        cpu: 100m\n        memory: 128Mi\n      default:\n        cpu: 500m\n        memory: 512Mi\n", namespace, namespace),
+		}
+	case "patch_pod_security_labels":
+		return core.PlannedManifest{ActionType: action.Type, Target: action.Target, WriteMode: "direct-tier-a", Diff: "Patch namespace Pod Security labels to enforce baseline, audit restricted, and warn restricted.", Manifest: fmt.Sprintf("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n  labels:\n    pod-security.kubernetes.io/enforce: baseline\n    pod-security.kubernetes.io/audit: restricted\n    pod-security.kubernetes.io/warn: restricted\n", action.Target.Name)}
+	case "patch_workload_probes":
+		return core.PlannedManifest{ActionType: action.Type, Target: action.Target, WriteMode: "gated-tier-b", Diff: "Patch containers missing readiness/liveness probes with a conservative HTTP health endpoint after approval.", Manifest: fmt.Sprintf("apiVersion: %s\nkind: %s\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  template:\n    spec:\n      containers:\n        - name: '*'\n          readinessProbe:\n            httpGet:\n              path: /healthz\n              port: http\n          livenessProbe:\n            httpGet:\n              path: /healthz\n              port: http\n", action.Target.APIVersion, action.Target.Kind, action.Target.Name, action.Target.Namespace)}
+	case "patch_workload_resources":
+		return core.PlannedManifest{ActionType: action.Type, Target: action.Target, WriteMode: "gated-tier-b", Diff: "Patch missing CPU/memory requests and limits with bounded defaults; image pinning remains recommendation-only.", Manifest: fmt.Sprintf("apiVersion: %s\nkind: %s\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  template:\n    spec:\n      containers:\n        - name: '*'\n          resources:\n            requests:\n              cpu: 100m\n              memory: 128Mi\n            limits:\n              cpu: 500m\n              memory: 512Mi\n", action.Target.APIVersion, action.Target.Kind, action.Target.Name, action.Target.Namespace)}
+	case "create_pdb":
+		return core.PlannedManifest{ActionType: action.Type, Target: action.Target, WriteMode: "gated-tier-b", Diff: "Create a PodDisruptionBudget matching the target workload labels after approval.", Manifest: fmt.Sprintf("apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: %s-kubeathrix\n  namespace: %s\nspec:\n  minAvailable: 1\n  selector:\n    matchLabels: {}\n", action.Target.Name, action.Target.Namespace)}
+	case "propose_network_policy":
+		namespace := action.Target.Name
+		if namespace == "" {
+			namespace = action.Target.Namespace
+		}
+		return core.PlannedManifest{ActionType: action.Type, Target: action.Target, WriteMode: "gitops-proposal", Diff: "Generate default-deny NetworkPolicy proposal; broad network changes are never applied autonomously.", Manifest: fmt.Sprintf("apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: kubeathrix-default-deny\n  namespace: %s\nspec:\n  podSelector: {}\n  policyTypes:\n    - Ingress\n    - Egress\n", namespace)}
+	default:
+		return core.PlannedManifest{ActionType: action.Type, Target: action.Target, WriteMode: "notify-only", Diff: action.Description, Manifest: ""}
+	}
 }
 
 func riskTierForFixability(fixability core.Fixability) core.RiskTier {
@@ -535,4 +924,129 @@ func approvalPolicyForFinding(finding core.Finding) core.ApprovalPolicy {
 	default:
 		return core.ApprovalPolicy{Required: true, Categories: []string{"runtime", "human-triage"}}
 	}
+}
+
+func evidenceFreshness(findings map[string]core.Finding, now time.Time) string {
+	if len(findings) == 0 {
+		return "no-evidence"
+	}
+	latest := time.Time{}
+	for _, finding := range findings {
+		if finding.UpdatedAt.After(latest) {
+			latest = finding.UpdatedAt
+		}
+	}
+	if latest.IsZero() {
+		return "unknown"
+	}
+	age := now.Sub(latest)
+	switch {
+	case age <= 15*time.Minute:
+		return "fresh"
+	case age <= 2*time.Hour:
+		return "recent"
+	case age <= 24*time.Hour:
+		return "stale"
+	default:
+		return "expired"
+	}
+}
+
+func scopeMatchesFinding(scope string, finding core.Finding) bool {
+	if scope == "all" || scope == finding.ID || scope == finding.CorrelationGroup || scope == finding.Source {
+		return true
+	}
+	for _, resource := range finding.Resources {
+		if scope == resource.Namespace || scope == resource.Name || scope == resource.String() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFinding(findings []core.Finding, id string) bool {
+	for _, finding := range findings {
+		if finding.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPlan(plans []core.RemediationPlan, id string) bool {
+	for _, plan := range plans {
+		if plan.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRun(runs []core.RemediationRun, id string) bool {
+	for _, run := range runs {
+		if run.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func buildIntegrationHealth(integration core.Integration, findings map[string]core.Finding, now time.Time) core.IntegrationHealth {
+	health := "not_configured"
+	setupGaps := []string{}
+	if integration.Enabled && integration.Status != "disabled" {
+		health = "healthy"
+	} else {
+		setupGaps = append(setupGaps, "Enable the Helm value for this integration and confirm its CRDs or event source are installed.")
+	}
+	lastSeen := "never"
+	sourceName := strings.ToLower(integration.Name)
+	for _, finding := range findings {
+		if strings.Contains(sourceName, strings.ToLower(finding.Source)) || strings.Contains(strings.ToLower(finding.Source), strings.Fields(sourceName)[0]) {
+			if finding.UpdatedAt.IsZero() {
+				continue
+			}
+			if lastSeen == "never" || finding.UpdatedAt.Format(time.RFC3339) > lastSeen {
+				lastSeen = finding.UpdatedAt.Format(time.RFC3339)
+			}
+		}
+	}
+	return core.IntegrationHealth{
+		Name:         integration.Name,
+		Type:         integration.Type,
+		Enabled:      integration.Enabled,
+		Status:       integration.Status,
+		Health:       health,
+		DataLastSeen: lastSeen,
+		Permissions:  integrationPermissions(integration.Name),
+		SetupGaps:    setupGaps,
+		CheckedAt:    now,
+	}
+}
+
+func BuildIntegrationHealth(integration core.Integration, findings map[string]core.Finding, now time.Time) core.IntegrationHealth {
+	return buildIntegrationHealth(integration, findings, now)
+}
+
+func integrationPermissions(name string) []string {
+	switch strings.ToLower(name) {
+	case "trivy operator":
+		return []string{"Read vulnerabilityreports", "Read configauditreports", "Read exposedsecretreports", "Read rbacassessmentreports"}
+	case "kubescape":
+		return []string{"Read workloadconfiguration scans", "Read vulnerability manifests", "Read posture resources"}
+	case "kyverno":
+		return []string{"Read policyreports", "Read clusterpolicyreports", "Read admission policy status"}
+	case "falco":
+		return []string{"Read runtime event stream or forwarded events", "Correlate pod and namespace metadata"}
+	case "tetragon":
+		return []string{"Read process/network event stream", "Correlate pod and workload metadata"}
+	case "chaos mesh", "litmuschaos":
+		return []string{"Dry-run create allowlisted chaos objects", "Create/delete only when chaos execution is enabled"}
+	default:
+		return []string{"Read integration status and emitted findings"}
+	}
+}
+
+func safeID(value string) string {
+	return strings.Trim(strings.NewReplacer(" ", "-", "_", "-", "/", "-").Replace(strings.ToLower(value)), "-")
 }
