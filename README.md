@@ -47,9 +47,9 @@ Release images are published to one Docker Hub repository with component-prefixe
 
 <!-- x-release-please-start-version -->
 ```powershell
-docker pull docker.io/prashantdey/kubeathrix:api-0.1.0
-docker pull docker.io/prashantdey/kubeathrix:console-0.1.0
-docker pull docker.io/prashantdey/kubeathrix:operator-0.1.0
+docker pull docker.io/prashantdey/kubeathrix:api-0.2.0
+docker pull docker.io/prashantdey/kubeathrix:console-0.2.0
+docker pull docker.io/prashantdey/kubeathrix:operator-0.2.0
 ```
 <!-- x-release-please-end -->
 

@@ -99,13 +99,13 @@ The default chart images come from the Docker Hub repository `docker.io/prashant
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: api-0.1.0
+    tag: api-0.2.0
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: console-0.1.0
+    tag: console-0.2.0
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: operator-0.1.0
+    tag: operator-0.2.0
 ```
 <!-- x-release-please-end -->
 

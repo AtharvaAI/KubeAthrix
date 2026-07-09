@@ -11,18 +11,18 @@ Each component uses a tag prefix.
 <!-- x-release-please-start-version -->
 | Component | Versioned tag | Rolling tag |
 | --- | --- | --- |
-| API | `api-0.1.0` | `api-latest` |
-| Console | `console-0.1.0` | `console-latest` |
-| Operator | `operator-0.1.0` | `operator-latest` |
+| API | `api-0.2.0` | `api-latest` |
+| Console | `console-0.2.0` | `console-latest` |
+| Operator | `operator-0.2.0` | `operator-latest` |
 <!-- x-release-please-end -->
 
 ## Pull Images
 
 <!-- x-release-please-start-version -->
 ```powershell
-docker pull docker.io/prashantdey/kubeathrix:api-0.1.0
-docker pull docker.io/prashantdey/kubeathrix:console-0.1.0
-docker pull docker.io/prashantdey/kubeathrix:operator-0.1.0
+docker pull docker.io/prashantdey/kubeathrix:api-0.2.0
+docker pull docker.io/prashantdey/kubeathrix:console-0.2.0
+docker pull docker.io/prashantdey/kubeathrix:operator-0.2.0
 ```
 <!-- x-release-please-end -->
 
@@ -54,11 +54,11 @@ The chart defaults to the pinned published image tags.
 helm dependency build charts/kubeathrix
 helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
   --set image.api.repository=docker.io/prashantdey/kubeathrix `
-  --set image.api.tag=api-0.1.0 `
+  --set image.api.tag=api-0.2.0 `
   --set image.console.repository=docker.io/prashantdey/kubeathrix `
-  --set image.console.tag=console-0.1.0 `
+  --set image.console.tag=console-0.2.0 `
   --set image.operator.repository=docker.io/prashantdey/kubeathrix `
-  --set image.operator.tag=operator-0.1.0
+  --set image.operator.tag=operator-0.2.0
 ```
 <!-- x-release-please-end -->
 

@@ -39,10 +39,10 @@ Configure these repository secrets before publishing images:
 ## Image Tags
 
 <!-- x-release-please-start-version -->
-For release `v0.1.0`, the publish workflow pushes:
+For release `v0.2.0`, the publish workflow pushes:
 
 ```text
-docker.io/prashantdey/kubeathrix:api-0.1.0
+docker.io/prashantdey/kubeathrix:api-0.2.0
 docker.io/prashantdey/kubeathrix:api-0.1
 docker.io/prashantdey/kubeathrix:api-0
 docker.io/prashantdey/kubeathrix:api-latest
@@ -61,7 +61,7 @@ Use manual publishing only to recover from a failed Docker Hub publish after a r
 1. Open GitHub Actions.
 2. Run `Publish Docker Images`.
 <!-- x-release-please-start-version -->
-3. Enter the release version, for example `0.1.0`.
+3. Enter the release version, for example `0.2.0`.
 <!-- x-release-please-end -->
 4. Leave `push_latest` enabled only for stable releases.
 

@@ -6,15 +6,15 @@ replicaCount:
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "api-0.1.0" # x-release-please-version
+    tag: "api-0.2.0" # x-release-please-version
     pullPolicy: IfNotPresent
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "console-0.1.0" # x-release-please-version
+    tag: "console-0.2.0" # x-release-please-version
     pullPolicy: IfNotPresent
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "operator-0.1.0" # x-release-please-version
+    tag: "operator-0.2.0" # x-release-please-version
     pullPolicy: IfNotPresent
 
 service:
