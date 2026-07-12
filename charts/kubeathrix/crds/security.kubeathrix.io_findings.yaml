@@ -94,13 +94,35 @@ spec:
                   enum: ["safe_deterministic", "dry_run_then_gated", "human_approved_only", "informational_no_fix"]
                 findingStatus:
                   type: string
-                  enum: ["open", "in_review", "remediating", "resolved", "suppressed"]
+                  enum: ["open", "in_review", "remediating", "resolved", "suppressed", "expired"]
                 correlationGroup:
                   type: string
+                correlationKeys:
+                  type: object
+                  properties:
+                    workload: {type: string}
+                    namespace: {type: string}
+                    identity: {type: string}
+                    networkExposure: {type: string}
+                    image: {type: string}
                 riskScore:
                   type: integer
                   minimum: 0
                   maximum: 100
+                riskExplanation:
+                  type: object
+                  properties:
+                    version: {type: string}
+                    baseScore: {type: integer}
+                    finalScore: {type: integer}
+                    factors:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name: {type: string}
+                          points: {type: integer}
+                          reason: {type: string}
                 remediationState:
                   type: string
                 recommendedAction:
@@ -112,9 +134,14 @@ spec:
                   type: string
                 observedGeneration:
                   type: integer
-                  format: int64
                 lastTransitionTime:
                   type: string
                   format: date-time
+                remediationState:
+                  type: string
+                verificationResult:
+                  type: string
+                lastError:
+                  type: string
       subresources:
         status: {}

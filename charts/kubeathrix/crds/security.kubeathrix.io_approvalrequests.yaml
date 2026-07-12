@@ -48,6 +48,18 @@ spec:
                 expiresAt:
                   type: string
                   format: date-time
+                decision:
+                  type: string
+                  enum: ["pending", "approved", "rejected"]
+                  default: "pending"
+                decidedBy:
+                  type: string
+                decisionReason:
+                  type: string
+                  maxLength: 2048
+                decidedAt:
+                  type: string
+                  format: date-time
             status:
               type: object
               properties:
@@ -60,7 +72,6 @@ spec:
                   type: string
                 observedGeneration:
                   type: integer
-                  format: int64
                 lastTransitionTime:
                   type: string
                   format: date-time

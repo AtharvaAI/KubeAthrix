@@ -1,43 +1,16 @@
-# Model Provider Guide
+# Optional model providers
 
-KubeAthrix supports OpenAI-compatible model providers through references to secrets. The product does not store raw API keys in the UI settings schema.
+KubeAthrix 0.2.0 is deterministic by default and does not invoke a model. The
+administrator-only provider settings API accepts Kubernetes Secret or external
+secret references as inventory metadata, but the application does not resolve
+those references, read the secret payload, send evidence to a provider, or use
+model output in remediation.
 
-## Kubernetes Secret Reference
+Raw API keys are deliberately absent from the API schema, logs, database, Helm
+defaults, and browser state. Do not create a model credential for this release.
 
-```yaml
-modelProviders:
-  - name: primary
-    type: openai-compatible
-    model: gpt-5
-    apiKeySecretRef:
-      name: kubeathrix-llm
-      key: api-key
-```
-
-Create the secret separately:
-
-```powershell
-kubectl -n kubeathrix create secret generic kubeathrix-llm --from-literal=api-key='REDACTED'
-```
-
-## External Secret Reference
-
-```yaml
-modelProviders:
-  - name: primary
-    type: openai-compatible
-    model: gpt-5
-    externalSecretRef:
-      store: vault
-      path: secret/data/kubeathrix/model-provider
-      key: api-key
-```
-
-Use this mode for production when an external secret store is already available.
-
-## Safety Notes
-
-- Do not commit model keys into Helm values.
-- Scope provider keys to the minimum needed model API access.
-- Treat scanner output and logs as untrusted model input.
-- Monitor prompt-injection attempts as security events.
+A future model gateway must ship with strict structured output validation,
+prompt-injection defenses, explicit egress policy, timeouts and cost bounds,
+evaluation fixtures, and a deterministic fallback before this guide will
+document provider setup. Regardless of that future work, model output will not
+be permitted to bypass the versioned typed action catalog.

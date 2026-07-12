@@ -6,7 +6,7 @@ metadata:
     {{- include "kubeathrix.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "pods", "services", "events", "serviceaccounts", "configmaps", "secrets", "resourcequotas", "limitranges", "persistentvolumeclaims"]
+    resources: ["namespaces", "pods", "services", "events", "serviceaccounts", "configmaps", "resourcequotas", "limitranges", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
@@ -27,14 +27,29 @@ rules:
     resources: ["networkpolicies", "ingresses"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["security.kubeathrix.io"]
-    resources: ["findings", "remediationplans", "approvalrequests", "remediationruns", "exceptions"]
+    resources: ["exceptions"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["security.kubeathrix.io"]
+    resources: ["findings", "remediationplans", "approvalrequests"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["security.kubeathrix.io"]
+    resources: ["remediationruns"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["aquasecurity.github.io"]
+    resources: ["vulnerabilityreports", "configauditreports", "exposedsecretreports", "rbacassessmentreports"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["wgpolicyk8s.io"]
+    resources: ["policyreports", "clusterpolicyreports"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["openreports.io"]
+    resources: ["reports", "clusterreports"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["spdx.softwarecomposition.kubescape.io"]
+    resources: ["workloadconfigurationscansummaries", "vulnerabilitymanifestsummaries"]
     verbs: ["get", "list", "watch"]
   {{- if .Values.chaos.execution.enabled }}
   - apiGroups: ["chaos-mesh.org"]
     resources: ["networkchaos", "stresschaos", "dnschaos"]
-    verbs: ["get", "list", "watch", "create", "delete"]
-  - apiGroups: ["litmuschaos.io"]
-    resources: ["chaosengines"]
     verbs: ["get", "list", "watch", "create", "delete"]
   {{- end }}
 ---
@@ -47,7 +62,16 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["resourcequotas", "limitranges"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["security.kubeathrix.io"]
     resources: ["findings", "remediationplans", "approvalrequests", "remediationruns", "exceptions"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -83,6 +107,34 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "kubeathrix.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubeathrix.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-rollback-snapshots
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-rollback-snapshots
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kubeathrix.fullname" . }}-rollback-snapshots
 subjects:
   - kind: ServiceAccount
     name: {{ include "kubeathrix.fullname" . }}-operator

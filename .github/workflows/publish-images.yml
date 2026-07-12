@@ -1,9 +1,6 @@
-name: Publish Docker Images
+name: Publish Verified Release
 
 on:
-  release:
-    types:
-      - published
   workflow_dispatch:
     inputs:
       version:
@@ -16,7 +13,9 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
+  id-token: write
+  attestations: write
 
 env:
   REGISTRY: docker.io
@@ -26,42 +25,213 @@ jobs:
   verify:
     name: Verify before publishing
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+        env:
+          POSTGRES_USER: kubeathrix
+          POSTGRES_PASSWORD: kubeathrix-test
+          POSTGRES_DB: kubeathrix
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kubeathrix"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      KUBEATHRIX_POSTGRES_TEST_URL: postgres://kubeathrix:kubeathrix-test@127.0.0.1:5432/kubeathrix?sslmode=disable
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with: { fetch-depth: 0 }
+
+      - name: Validate requested version
+        shell: bash
+        run: |
+          RAW_VERSION="${{ inputs.version }}"
+          VERSION="${RAW_VERSION#v}"
+          CODE_VERSION=$(node -p "require('./package.json').version")
+          test "$VERSION" = "$CODE_VERSION" || { echo "Requested $VERSION but source is $CODE_VERSION" >&2; exit 1; }
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.1"
+          go-version: "1.25.12"
           cache-dependency-path: |
             services/api/go.sum
             operator/go.sum
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "24"
+          node-version: "24.7.0"
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with: { version: v3.18.4 }
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: "11.7.0"
+          version: "10.32.1"
           run_install: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Go tests
-        run: go test ./services/api/... ./operator/... -short
+      - name: Run Go format, vet, tests, and race detector
+        run: |
+          test -z "$(gofmt -l services/api operator pkg/actioncatalog)"
+          go vet ./services/api/... ./operator/... ./pkg/actioncatalog/...
+          go test ./services/api/... ./operator/... ./pkg/actioncatalog/... -count=1
+          go test ./services/api/internal/cluster -run Chaos -count=1
+          go test -race ./services/api/... ./operator/... ./pkg/actioncatalog/... -count=1
 
-      - name: Build console
-        run: pnpm --filter @kubeathrix/console build
+      - name: Verify Postgres migrations and restart persistence
+        run: go test -tags=integration ./services/api/internal/postgres -count=1 -v
+
+      - name: Audit, test, and build console
+        run: |
+          pnpm audit --audit-level high
+          pnpm --filter @kubeathrix/console test
+          pnpm --filter @kubeathrix/console build
+
+      - run: pnpm --filter @kubeathrix/console exec playwright install --with-deps chromium
+      - run: pnpm --filter @kubeathrix/console test:e2e
+
+      - name: Go vulnerability, SAST, and license checks
+        run: |
+          (cd services/api && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd operator && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd pkg/actioncatalog && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.22.8 ./services/api/... ./operator/...
+          go run github.com/google/go-licenses@v1.6.0 check ./services/api/... ./operator/... --ignore github.com/atharvaai/kubeathrix --allowed_licenses=Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0
+
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate OpenAPI and chart
+        run: |
+          node scripts/check-versions.mjs
+          npx --yes @redocly/cli@1.34.3 lint services/api/openapi.yaml
+          helm dependency build charts/kubeathrix
+          helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true
+          helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.oidc.issuerURL=https://issuer.example.test --set auth.oidc.clientID=kubeathrix > rendered-secure.yaml
+          helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.oidc.issuerURL=https://issuer.example.test --set auth.oidc.clientID=kubeathrix --set chaos.execution.enabled=true --set engines.chaosMesh.enabled=true --set 'chaos.namespaceAllowlist={sandbox}' > rendered-chaos.yaml
+
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: config
+          scan-ref: rendered-secure.yaml
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: config
+          scan-ref: rendered-chaos.yaml
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  prepublish-images:
+    name: Pre-publish image scan ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { component: api, dockerfile: services/api/Dockerfile }
+          - { component: console, dockerfile: apps/console/Dockerfile }
+          - { component: operator, dockerfile: operator/Dockerfile }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          RAW_VERSION="${{ inputs.version }}"
+          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          load: true
+          tags: kubeathrix/${{ matrix.component }}:release-candidate
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
+      - uses: anchore/sbom-action@df80a981bc6edbc4e220a492d3cbe9f5547a6e75 # v0.17.9
+        with:
+          image: kubeathrix/${{ matrix.component }}:release-candidate
+          output-file: ${{ matrix.component }}.spdx.json
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: kubeathrix/${{ matrix.component }}:release-candidate
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  kind:
+    name: Pre-publish Kind installation
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: kubeathrix-release
+          node_image: kindest/node:v1.33.4@sha256:25a6018e48dfcaee478f4a59af81157a437f15e6e140bf103f85a2e7cd0cbbf2
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with: { version: v3.18.4 }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+          cache-dependency-path: services/api/go.sum
+      - name: Build, install, and test
+        env:
+          CORE_IMAGE: kubeathrix/api
+        run: |
+          docker build -f services/api/Dockerfile -t kubeathrix/api:release-candidate .
+          docker build -f apps/console/Dockerfile -t kubeathrix/console:release-candidate .
+          docker build -f operator/Dockerfile -t kubeathrix/operator:release-candidate .
+          kind load docker-image --name kubeathrix-release kubeathrix/api:release-candidate kubeathrix/console:release-candidate kubeathrix/operator:release-candidate
+          helm dependency build charts/kubeathrix
+          helm upgrade --install kubeathrix charts/kubeathrix -n kubeathrix --create-namespace --wait --timeout 5m \
+            --set auth.insecureDevelopmentMode=true \
+            --set image.api.repository="$CORE_IMAGE" --set image.api.tag=release-candidate --set image.api.pullPolicy=Never \
+            --set image.console.repository=kubeathrix/console --set image.console.tag=release-candidate --set image.console.pullPolicy=Never \
+            --set image.operator.repository=kubeathrix/operator --set image.operator.tag=release-candidate --set image.operator.pullPolicy=Never
+          kubectl -n kubeathrix rollout status deploy/kubeathrix-api --timeout=2m
+          kubectl -n kubeathrix rollout status deploy/kubeathrix-operator --timeout=2m
+          helm test kubeathrix -n kubeathrix --logs --timeout 2m
+          TARGET_REVISION=$(helm history kubeathrix -n kubeathrix -o json | jq -r '[.[] | select(.status == "deployed") | (.revision | tonumber)] | max')
+          PASSWORD_BEFORE=$(kubectl -n kubeathrix get secret kubeathrix-postgres -o jsonpath='{.data.password}')
+          helm upgrade kubeathrix charts/kubeathrix -n kubeathrix --reuse-values --wait --timeout 3m --set api.rateLimitPerMinute=121
+          PASSWORD_AFTER=$(kubectl -n kubeathrix get secret kubeathrix-postgres -o jsonpath='{.data.password}')
+          test "$PASSWORD_BEFORE" = "$PASSWORD_AFTER"
+          helm rollback kubeathrix "$TARGET_REVISION" -n kubeathrix --wait --timeout 3m
+          PASSWORD_ROLLBACK=$(kubectl -n kubeathrix get secret kubeathrix-postgres -o jsonpath='{.data.password}')
+          test "$PASSWORD_BEFORE" = "$PASSWORD_ROLLBACK"
+          helm test kubeathrix -n kubeathrix --logs --timeout 2m
+      - name: Real bounded Chaos Mesh lifecycle
+        env:
+          KUBEATHRIX_CHAOS_E2E: "true"
+        run: |
+          helm repo add chaos-mesh https://charts.chaos-mesh.org
+          helm repo update
+          helm upgrade --install chaos-mesh chaos-mesh/chaos-mesh --version 2.8.3 -n chaos-mesh --create-namespace --wait --timeout 5m \
+            --set chaosDaemon.runtime=containerd \
+            --set chaosDaemon.socketPath=/run/containerd/containerd.sock \
+            --set dashboard.create=false \
+            --set controllerManager.replicaCount=1 \
+            --set controllerManager.leaderElection.enabled=false
+          go test ./services/api/internal/cluster -run '^TestChaosMeshLifecycleIntegration$' -count=1 -v
 
   publish:
     name: Publish ${{ matrix.component }}
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, prepublish-images, kind]
     strategy:
       fail-fast: false
       matrix:
@@ -77,19 +247,14 @@ jobs:
             description: KubeAthrix controller-runtime operator
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Resolve release version
         id: version
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            RAW_VERSION="${{ github.event.release.tag_name }}"
-            PUSH_LATEST="${{ github.event.release.prerelease != true }}"
-          else
-            RAW_VERSION="${{ inputs.version }}"
-            PUSH_LATEST="${{ inputs.push_latest }}"
-          fi
+          RAW_VERSION="${{ inputs.version }}"
+          PUSH_LATEST="${{ inputs.push_latest }}"
 
           VERSION="${RAW_VERSION#v}"
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
@@ -116,20 +281,26 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
+          sbom: true
+          provenance: mode=max
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
           tags: ${{ steps.version.outputs.tags }}
           labels: |
             org.opencontainers.image.title=KubeAthrix ${{ matrix.component }}
@@ -137,3 +308,87 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - name: Keyless-sign immutable image digest
+        run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+
+      - name: Scan published image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Record immutable digest
+        run: |
+          mkdir -p digests
+          echo '${{ steps.build.outputs.digest }}' > "digests/${{ matrix.component }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digest-${{ matrix.component }}
+          path: digests/${{ matrix.component }}
+          if-no-files-found: error
+
+  chart:
+    name: Publish digest-pinned OCI chart
+    runs-on: ubuntu-latest
+    needs: publish
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with: { version: v3.18.4 }
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+      - name: Resolve version and pin image digests
+        id: version
+        shell: bash
+        run: |
+          RAW_VERSION="${{ inputs.version }}"
+          VERSION="${RAW_VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          API_DIGEST=$(tr -d '\r\n' < digests/api)
+          CONSOLE_DIGEST=$(tr -d '\r\n' < digests/console)
+          OPERATOR_DIGEST=$(tr -d '\r\n' < digests/operator)
+          export API_DIGEST CONSOLE_DIGEST OPERATOR_DIGEST
+          yq -i '.image.api.digest = strenv(API_DIGEST) | .image.console.digest = strenv(CONSOLE_DIGEST) | .image.operator.digest = strenv(OPERATOR_DIGEST)' charts/kubeathrix/values.yaml
+          helm dependency build charts/kubeathrix
+          helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true
+          helm package charts/kubeathrix --destination dist
+          sha256sum dist/*.tgz > dist/SHA256SUMS
+      - name: Log in to Docker Hub for OCI chart
+        run: echo '${{ secrets.DOCKERHUB_TOKEN }}' | helm registry login docker.io -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
+      - name: Push and sign OCI chart
+        run: |
+          OUTPUT=$(helm push "dist/kubeathrix-${{ steps.version.outputs.version }}.tgz" oci://docker.io/prashantdey)
+          DIGEST=$(echo "$OUTPUT" | sed -n 's/^Digest: //p')
+          test -n "$DIGEST"
+          cosign sign --yes "docker.io/prashantdey/kubeathrix@$DIGEST"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kubeathrix-release-artifacts
+          path: dist/
+      - name: Create GitHub release after verified publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to replace a published release" >&2
+            exit 1
+          fi
+          PRERELEASE_ARGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE_ARGS+=(--prerelease)
+          fi
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "KubeAthrix $TAG" --generate-notes "${PRERELEASE_ARGS[@]}"

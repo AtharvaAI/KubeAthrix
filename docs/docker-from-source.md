@@ -50,7 +50,7 @@ docker compose -f deploy/docker-compose.source.yaml up --build
 Then open:
 
 - Console: http://127.0.0.1:5173
-- API health: http://127.0.0.1:8080/api/health
+- API readiness: http://127.0.0.1:8080/health/ready
 
 Stop and remove local containers:
 
@@ -72,13 +72,15 @@ kind load docker-image prashantdey/kubeathrix:api-dev --name kubeathrix
 kind load docker-image prashantdey/kubeathrix:console-dev --name kubeathrix
 kind load docker-image prashantdey/kubeathrix:operator-dev --name kubeathrix
 helm dependency build charts/kubeathrix
+$imageRepository = "prashantdey/kubeathrix"
 helm upgrade --install kubeathrix ./charts/kubeathrix `
   -n kubeathrix --create-namespace `
-  --set image.api.repository=prashantdey/kubeathrix `
+  --set auth.insecureDevelopmentMode=true `
+  --set image.api.repository=$imageRepository `
   --set image.api.tag=api-dev `
-  --set image.console.repository=prashantdey/kubeathrix `
+  --set image.console.repository=$imageRepository `
   --set image.console.tag=console-dev `
-  --set image.operator.repository=prashantdey/kubeathrix `
+  --set image.operator.repository=$imageRepository `
   --set image.operator.tag=operator-dev `
   --set image.api.pullPolicy=IfNotPresent `
   --set image.console.pullPolicy=IfNotPresent `

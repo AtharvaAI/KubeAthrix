@@ -1,5 +1,5 @@
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
-export type FindingStatus = "open" | "in_review" | "remediating" | "resolved" | "suppressed";
+export type FindingStatus = "open" | "in_review" | "remediating" | "resolved" | "suppressed" | "expired";
 export type Fixability =
   | "safe_deterministic"
   | "dry_run_then_gated"
@@ -31,11 +31,24 @@ export interface Finding {
   fixability: Fixability;
   status: FindingStatus;
   correlationGroup: string;
+	correlationKeys?: { workload?: string; namespace?: string; identity?: string; networkExposure?: string; image?: string };
   riskScore: number;
+	riskExplanation?: { version: string; baseScore: number; factors: Array<{ name: string; points: number; reason: string }>; finalScore: number };
   remediationState: string;
   recommendedAction: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface FindingException {
+	id: string;
+	scope: string;
+	owner: string;
+	reason: string;
+	expiresAt: string;
+	status: "active" | "expired";
+	createdAt: string;
+	updatedAt: string;
 }
 
 export interface Dashboard {
@@ -126,7 +139,26 @@ export interface ChaosExperimentRun {
   status: string;
   message: string;
   manifest: string;
+  resource: ResourceRef;
+  targetSelector: Record<string, string>;
+  targetCount: number;
+  durationSeconds: number;
+  requestedBy: string;
+  approvedBy?: string;
+  approvalReason?: string;
+  abortedBy?: string;
+  failureReason?: string;
+  recoveryStatus?: string;
+  recoveryMessage?: string;
+  version: number;
   createdAt: string;
+  updatedAt: string;
+  approvalExpiresAt?: string;
+  injectionDeadline?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  cleanupDeadline?: string;
+  recoveryDeadline?: string;
 }
 
 export interface TypedAction {
@@ -138,6 +170,7 @@ export interface TypedAction {
 
 export interface RemediationPlan {
   id: string;
+  catalogVersion: string;
   findingId: string;
   rootCause: string;
   actions: TypedAction[];
@@ -150,6 +183,7 @@ export interface RemediationPlan {
   rollbackSteps: string[];
   approvalPolicy: {
     required: boolean;
+    decision?: "pending" | "approved" | "rejected" | "expired";
     categories?: string[];
   };
   status: string;
@@ -178,6 +212,13 @@ export interface PlannedManifest {
   actionType: string;
   target: ResourceRef;
   writeMode: string;
+  riskTier: string;
+  approvalRequired: boolean;
+  requiredPermissions: string[];
+  verificationChecks: string[];
+  rollbackProcedure: string[];
+  idempotencyBehavior: string;
+  failureHandling: string;
   diff: string;
   manifest: string;
 }
@@ -218,6 +259,7 @@ export interface EvidenceBundle {
   findings: Finding[];
   plans: RemediationPlan[];
   runs: RemediationRun[];
+  chaosRuns: ChaosExperimentRun[];
   auditEvents: AuditEvent[];
 }
 
@@ -247,7 +289,10 @@ export interface IntegrationHealth {
   health: string;
   dataLastSeen: string;
   permissions: string[];
+  supportedVersions: string[];
   setupGaps: string[];
+  errorState?: string;
+  findingsCount: number;
   checkedAt: string;
 }
 

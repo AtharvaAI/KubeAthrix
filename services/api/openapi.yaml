@@ -1,25 +1,85 @@
 openapi: 3.1.0
 info:
   title: KubeAthrix API
-  version: 0.1.0
-  summary: Production-shaped API for findings, approvals, typed remediations, and settings.
+  version: 0.2.0
+  summary: Authenticated API for Kubernetes findings and typed remediation proposals.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
 servers:
-  - url: /api
+  - url: /
+security:
+  - bearerAuth: []
 paths:
-  /health:
+  /auth/config:
     get:
-      summary: Health and auth mode
+      operationId: getAuthConfig
+      security: []
+      summary: Public browser OIDC bootstrap configuration (never includes secrets)
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "200": { description: "Authentication mode, issuer URL, and public client ID" }
+  /health/live:
+    get:
+      operationId: getHealthLive
+      security: []
+      summary: Process liveness probe
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "200":
+          description: API process is alive
+  /health/ready:
+    get:
+      operationId: getHealthReady
+      security: []
+      summary: Dependency readiness probe
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "200":
+          description: API dependencies and authentication are ready
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/health:
+    get:
+      operationId: getApiHealth
+      summary: Authenticated API and authentication-mode status
       responses:
         "200":
           description: API is healthy
-  /dashboard:
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+  /api/metrics:
     get:
+      operationId: getApiMetrics
+      summary: Authenticated Prometheus metrics
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "200": { description: Prometheus text exposition }
+  /api/action-catalog:
+    get:
+      operationId: getApiActionCatalog
+      summary: Read the versioned typed-action safety registry
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "200":
+          description: Catalog version and action definitions including risk, permissions, approval, dry-run, verification, rollback, idempotency, and failure policy
+  /api/dashboard:
+    get:
+      operationId: getApiDashboard
       summary: Aggregated risk, live inventory, scan coverage, and remediation dashboard
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Dashboard metrics, cluster inventory, compliance controls, and experiment templates
-  /findings:
+  /api/findings:
     get:
+      operationId: getApiFindings
       summary: List normalized findings, optionally grouped by workload, namespace, or owner
       parameters:
         - in: query
@@ -39,11 +99,22 @@ paths:
           schema:
             type: string
             enum: [workload, namespace, owner]
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: kind, schema: { type: string } }
+        - { in: query, name: fixability, schema: { type: string } }
+        - { in: query, name: minRisk, schema: { type: integer, minimum: 0, maximum: 100 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: sort, schema: { type: string, enum: [risk, updated, severity, title, source] } }
+        - { in: query, name: order, schema: { type: string, enum: [asc, desc] } }
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Finding list with optional grouping
-  /findings/{id}:
+  /api/findings/{id}:
     get:
+      operationId: getApiFindingsById
       summary: Get finding detail
       parameters:
         - in: path
@@ -55,10 +126,69 @@ paths:
           description: Finding detail
         "404":
           description: Finding not found
-  /remediation-plans/preview:
+  /api/findings/{id}/status:
+    patch:
+      operationId: patchApiFindingsByIdStatus
+      summary: Move a finding manually between open and in-review with an audited reason
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, reason]
+              properties:
+                status: { type: string, enum: [open, in_review] }
+                reason: { type: string }
+              additionalProperties: false
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "200": { description: Finding lifecycle state updated }
+  /api/exceptions:
+    get:
+      operationId: getApiExceptions
+      summary: List visible time-bounded finding exceptions
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "200": { description: Exception list }
     post:
+      operationId: postApiExceptions
+      summary: Create an audited time-bounded finding exception
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope, reason, expiresAt]
+              properties:
+                scope: { type: string }
+                reason: { type: string }
+                expiresAt: { type: string, format: date-time }
+              additionalProperties: false
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "201": { description: Exception created with owner derived from the authenticated principal }
+  /api/exceptions/{id}:
+    delete:
+      operationId: deleteApiExceptionsById
+      summary: Delete an exception and reopen findings not covered by another active exception
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "204": { description: Exception deleted }
+  /api/remediation-plans/preview:
+    post:
+      operationId: postApiRemediationPlansPreview
       summary: Preview a strict-schema remediation candidate without persisting it
-      description: Uses deterministic fallback planning with evidence citations and prompt/evidence hash.
+      description: Uses deterministic planning with evidence citations and a stable evidence hash.
       requestBody:
         required: true
         content:
@@ -68,14 +198,19 @@ paths:
               required: [findingId]
               properties:
                 findingId: { type: string }
-                requestedBy: { type: string }
+              additionalProperties: false
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Remediation preview
-  /remediation-plans:
+  /api/remediation-plans:
     post:
+      operationId: postApiRemediationPlans
       summary: Create a typed remediation plan
       description: The API creates typed actions only; no arbitrary shell or kubectl text is accepted.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -85,12 +220,15 @@ paths:
               required: [findingId]
               properties:
                 findingId: { type: string }
-                requestedBy: { type: string }
+              additionalProperties: false
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Plan created
-  /remediation-plans/{id}/diff:
+  /api/remediation-plans/{id}/diff:
     get:
+      operationId: getApiRemediationPlansByIdDiff
       summary: Get the typed diff and proposed manifests for a remediation plan
       parameters:
         - in: path
@@ -98,10 +236,13 @@ paths:
           required: true
           schema: { type: string }
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Remediation diff
-  /remediation-plans/{id}/execute:
+  /api/remediation-plans/{id}/execute:
     post:
+      operationId: postApiRemediationPlansByIdExecute
       summary: Request execution for a typed remediation plan whose approval gate is cleared
       parameters:
         - in: path
@@ -114,15 +255,15 @@ paths:
           application/json:
             schema:
               type: object
-              properties:
-                actor: { type: string }
+              additionalProperties: false
       responses:
         "202":
           description: Execution requested
         "400":
           description: Plan still requires approval or is not executable
-  /remediation-runs/{id}:
+  /api/remediation-runs/{id}:
     get:
+      operationId: getApiRemediationRunsById
       summary: Read remediation run state
       parameters:
         - in: path
@@ -130,28 +271,83 @@ paths:
           required: true
           schema: { type: string }
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Remediation run
-  /approvals/{id}/approve:
+  /api/remediation-runs/{id}/rollback:
     post:
-      summary: Approve a gated action
+      operationId: postApiRemediationRunsByIdRollback
+      summary: Request typed rollback from the controller-owned pre-change snapshot
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
       responses:
+        "202":
+          description: Rollback request persisted in the remediation plan CRD
+        "409":
+          description: Run is not eligible for rollback or has no usable snapshot
+  /api/approvals/{id}/approve:
+    post:
+      operationId: postApiApprovalsByIdApprove
+      summary: Approve a gated action
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 2048 }
+              additionalProperties: false
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Approval recorded
-  /approvals/{id}/reject:
+  /api/approvals/{id}/reject:
     post:
+      operationId: postApiApprovalsByIdReject
       summary: Reject a gated action
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 2048 }
+              additionalProperties: false
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Rejection recorded
-  /audit-events:
+  /api/audit-events:
     get:
+      operationId: getApiAuditEvents
       summary: List audit events
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Audit event list
-  /evidence-bundles/{scope}:
+  /api/evidence-bundles/{scope}:
     get:
+      operationId: getApiEvidenceBundlesByScope
       summary: Export an evidence bundle by finding, plan, source, group, or all
       parameters:
         - in: path
@@ -159,16 +355,22 @@ paths:
           required: true
           schema: { type: string }
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Evidence bundle
-  /integrations:
+  /api/integrations:
     get:
+      operationId: getApiIntegrations
       summary: List engine and notification integrations
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Integration list
-  /integrations/{name}/health:
+  /api/integrations/{name}/health:
     get:
+      operationId: getApiIntegrationsByNameHealth
       summary: Read integration health, permissions, last-seen data, and setup gaps
       parameters:
         - in: path
@@ -176,18 +378,24 @@ paths:
           required: true
           schema: { type: string }
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Integration health
-  /experiments:
+  /api/experiments:
     get:
+      operationId: getApiExperiments
       summary: List predefined chaos experiment templates
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Experiment template list
-  /experiments/{id}/runs:
+  /api/experiments/{id}/runs:
     post:
-      summary: Create a preflight-ready chaos experiment run
-      description: Accepts predefined or custom chaos manifests behind an explicit execution gate.
+      operationId: postApiExperimentsByIdRuns
+      summary: Request a persistent bounded chaos run
+      description: Always performs bounded validation. Execution-enabled installations also discover healthy targets, perform a server-side dry-run, persist an approval request, and require separate approval and execution calls.
       parameters:
         - in: path
           name: id
@@ -201,21 +409,254 @@ paths:
               type: object
               properties:
                 manifest: { type: string }
-                requestedBy: { type: string }
-                targetNamespace: { type: string }
-                targetName: { type: string }
+              additionalProperties: false
       responses:
-        "202":
-          description: Experiment manifest accepted for preflight
-  /settings/model-providers:
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "201":
+          description: Persistent preflight or pending-approval run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChaosExperimentRun" }
+  /api/experiment-runs:
     get:
-      summary: Get model provider references
+      operationId: getApiExperimentRuns
+      summary: List persistent chaos runs visible to the authenticated namespace scope
       responses:
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "200":
+          description: Chaos run list
+  /api/experiment-runs/{id}:
+    get:
+      operationId: getApiExperimentRunsById
+      summary: Read and reconcile a persistent chaos run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "200":
+          description: Current Kubernetes-backed run state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChaosExperimentRun" }
+  /api/experiment-runs/{id}/approve:
+    post:
+      operationId: postApiExperimentRunsByIdApprove
+      summary: Approve a bounded chaos run as a principal other than its requester
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChaosDecision" }
+      responses:
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "200": { description: Approval persisted }
+  /api/experiment-runs/{id}/reject:
+    post:
+      operationId: postApiExperimentRunsByIdReject
+      summary: Reject a pending chaos run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChaosDecision" }
+      responses:
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "200": { description: Rejection persisted; no resource created }
+  /api/experiment-runs/{id}/execute:
+    post:
+      operationId: postApiExperimentRunsByIdExecute
+      summary: Explicitly execute an approved chaos run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "202": { description: Execution requested and reconciled against Kubernetes }
+  /api/experiment-runs/{id}/abort:
+    post:
+      operationId: postApiExperimentRunsByIdAbort
+      summary: Abort a chaos run and delete its owned resource
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChaosDecision" }
+      responses:
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "200": { description: Abort and cleanup persisted }
+  /api/settings/model-providers:
+    get:
+      operationId: getApiSettingsModelProviders
+      summary: Get inventory-only model provider references
+      responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Provider settings
     put:
-      summary: Replace model provider references
-      description: Raw API keys are intentionally not part of this schema.
+      operationId: putApiSettingsModelProviders
+      summary: Replace inventory-only model provider references
+      description: Version 0.2.0 does not resolve or invoke these references; raw API keys are intentionally not part of this schema.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelProviderSettings"
       responses:
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Provider settings updated
+components:
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      description: URL-safe client-generated key used to make plan creation retries return the original plan.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+        pattern: "^[A-Za-z0-9._-]+$"
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC access token whose audience is the configured KubeAthrix client ID.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+    ResourceRef:
+      type: object
+      required: [apiVersion, kind, name]
+      properties:
+        apiVersion: { type: string }
+        kind: { type: string }
+        namespace: { type: string }
+        name: { type: string }
+    ChaosDecision:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 2048 }
+    ChaosExperimentRun:
+      type: object
+      required: [id, experimentId, status, message, manifest, resource, targetSelector, targetCount, durationSeconds, requestedBy, version, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        experimentId: { type: string }
+        status:
+          type: string
+          enum: [preflight_validated, pending_approval, approved, execution_requested, running, cleanup_requested, abort_requested, verifying_recovery, succeeded, failed, rejected, aborted, expired]
+        message: { type: string }
+        manifest: { type: string }
+        resource: { $ref: "#/components/schemas/ResourceRef" }
+        targetSelector:
+          type: object
+          additionalProperties: { type: string }
+        targetCount: { type: integer, minimum: 1, maximum: 3 }
+        durationSeconds: { type: integer, minimum: 1, maximum: 300 }
+        requestedBy: { type: string }
+        approvedBy: { type: string }
+        approvalReason: { type: string }
+        abortedBy: { type: string }
+        failureReason: { type: string }
+        recoveryStatus: { type: string, enum: [healthy, unhealthy] }
+        recoveryMessage: { type: string }
+        attemptCount: { type: integer, minimum: 0, maximum: 3 }
+        version: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        approvalExpiresAt: { type: string, format: date-time }
+        injectionDeadline: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        cleanupDeadline: { type: string, format: date-time }
+        recoveryDeadline: { type: string, format: date-time }
+    ModelProviderSettings:
+      type: object
+      required: [providers]
+      additionalProperties: false
+      properties:
+        providers:
+          type: array
+          items:
+            type: object
+            required: [name, type, model]
+            additionalProperties: false
+            properties:
+              name: { type: string }
+              type: { type: string }
+              model: { type: string }
+              apiKeySecretRef:
+                type: object
+                required: [name, key]
+                additionalProperties: false
+                properties:
+                  name: { type: string }
+                  key: { type: string }
+              externalSecretRef:
+                type: object
+                required: [store, path, key]
+                additionalProperties: false
+                properties:
+                  store: { type: string }
+                  path: { type: string }
+                  key: { type: string }
+  responses:
+    RateLimited:
+      description: Request rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds until the current rate-limit window resets
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthenticated:
+      description: A valid bearer token is required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: A required dependency is not ready
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

@@ -8,7 +8,29 @@
 - Optional external Postgres for production.
 - Optional OIDC provider for production login.
 
-## Development Install
+## Secure install
+
+The chart requires OIDC settings unless the explicitly insecure development
+bypass is enabled. Create any confidential-client secret before installing:
+
+```powershell
+kubectl create namespace kubeathrix
+kubectl -n kubeathrix create secret generic kubeathrix-oidc `
+  --from-literal=client-secret='<OIDC client secret>'
+helm dependency build charts/kubeathrix
+helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix `
+  --set auth.oidc.issuerURL=https://identity.example.com/realms/platform `
+  --set auth.oidc.clientID=kubeathrix `
+  --set auth.oidc.existingSecret=kubeathrix-oidc `
+  --set api.clusterID=production-us-east-1
+```
+
+JWT validation itself does not require the client secret; omit
+`auth.oidc.existingSecret` for a public OIDC client. Configure the role and scope
+claims described in [authentication.md](authentication.md) before giving users
+access.
+
+## Isolated demo install
 
 The chart creates the `kubeathrix` release namespace and, when the bundled Kubescape engine is enabled, also creates the `kubescape` namespace required by the Kubescape subchart.
 
@@ -17,12 +39,14 @@ For fresh KubeAthrix installs, the Kyverno CRD migration hook is disabled by def
 <!-- x-release-please-start-version -->
 ```powershell
 helm dependency update charts/kubeathrix
-helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace
+helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
+  --set auth.insecureDevelopmentMode=true
 kubectl -n kubeathrix port-forward svc/kubeathrix-console 8080:80
 ```
 <!-- x-release-please-end -->
 
-The default install uses `ClusterIP` services and dev-mode auth. The API starts with empty workflow state, then populates dashboard and finding data from the live cluster scanner.
+The demo bypass grants administrator access to every request and must not be
+exposed outside an isolated local environment. Services remain `ClusterIP`.
 
 On EKS, the bundled Postgres StatefulSet uses the `gp2` storage class by default. Override it when your cluster uses a different storage class:
 
@@ -36,7 +60,7 @@ The chart sets `PGDATA=/var/lib/postgresql/data/pgdata` so Postgres initializes 
 
 The API enables the read-only cluster inspector by default. It uses the API service account in-cluster, or your local kubeconfig when you run the API outside Kubernetes.
 
-The scanner populates the console dashboard with nodes, pods, namespaces, workloads, services, ingresses, jobs, config maps, secret metadata counts, RBAC objects, NetworkPolicies, ResourceQuotas, LimitRanges, PVCs, PDBs, HPAs, and recent events.
+The scanner populates the console dashboard with nodes, pods, namespaces, workloads, services, ingresses, jobs, config maps, RBAC objects, NetworkPolicies, ResourceQuotas, LimitRanges, PVCs, PDBs, HPAs, and recent events. It does not request Secret objects.
 
 It synthesizes findings across these scan groups:
 
@@ -73,26 +97,20 @@ postgres:
   passwordKey: password
 
 auth:
-  devAuthEnabled: false
+  insecureDevelopmentMode: false
   oidc:
     enabled: true
     issuerURL: https://issuer.example.com
     clientID: kubeathrix
     existingSecret: kubeathrix-oidc
 
-modelProviders:
-  - name: primary
-    type: openai-compatible
-    model: gpt-5
-    apiKeySecretRef:
-      name: kubeathrix-llm
-      key: api-key
-
 service:
   type: ClusterIP
 ```
 
-The default chart images come from the Docker Hub repository `docker.io/prashantdey/kubeathrix`.
+The current preview chart references versioned Docker Hub tags. A production
+release is not declared until the release pipeline also publishes and verifies
+image digests, signatures, SBOMs, and provenance.
 
 <!-- x-release-please-start-version -->
 ```yaml
@@ -142,13 +160,17 @@ engines:
 
 ## Chaos Experiments
 
-The console includes predefined Litmus and Chaos Mesh experiment templates plus a custom YAML preflight path. By default, experiment run creation accepts a manifest and records a preflight-ready run without creating chaos resources.
+The console includes bounded Chaos Mesh templates plus a custom YAML path. The default mode performs validation only and never creates a resource. Validation requires an explicit namespace allowlist, an exact namespace selector, a non-empty label selector, `one` or `fixed` mode (maximum three affected targets), no more than 20 candidate pods, healthy targets, and a duration of at most five minutes.
 
-After installing the matching chaos engine, enable the execution gate to let the API create only allowlisted chaos custom resources (`NetworkChaos`, `StressChaos`, `DNSChaos`, and `ChaosEngine`) after a Kubernetes server-side dry-run:
+To enable persistent execution, first install a compatible Chaos Mesh control plane and use durable Postgres. Then enable the engine, execution gate, and exact non-system namespaces:
 
 ```powershell
---set chaos.execution.enabled=true
+--set chaos.execution.enabled=true \
+--set engines.chaosMesh.enabled=true \
+--set 'chaos.namespaceAllowlist={sandbox}'
 ```
+
+An operator request performs live target discovery and Kubernetes server-side dry-run, then persists `pending_approval`. A different approver must approve with a reason, and execution remains a separate operator action. KubeAthrix labels the created resource with its run ID and keeps the state at `execution_requested` until Chaos Mesh reports `AllInjected=True`; object creation alone is not reported as `running`. Injection must be proven within 30 seconds. KubeAthrix then deletes the object after the bounded duration or on abort and reports `succeeded` only after the resource is gone and all matching pods are Running and Ready. Approvals expire after 15 minutes; creation retries are capped at three; cleanup has a deadline; recovery is retried for two minutes. Every transition is audited and survives API restart through Postgres.
 
 For small EKS clusters, keep heavyweight bundled engines disabled until the node group has enough pod capacity:
 

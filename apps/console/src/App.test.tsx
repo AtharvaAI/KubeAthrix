@@ -131,14 +131,16 @@ function planPayload() {
   };
 }
 
-function mockApi() {
+function mockApi(modelSettingsAllowed = true) {
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = input.toString();
       const method = init?.method ?? "GET";
+	  if (url.endsWith("/auth/config")) return Promise.resolve(Response.json({ mode: "development", issuerURL: "", clientID: "" }));
       if (url.endsWith("/api/dashboard")) return Promise.resolve(Response.json(dashboardPayload()));
       if (url.endsWith("/api/findings")) return Promise.resolve(Response.json({ items: [finding] }));
+      if (url.endsWith("/api/exceptions")) return Promise.resolve(Response.json({ items: [] }));
       if (url.endsWith("/api/audit-events")) return Promise.resolve(Response.json({ items: [] }));
       if (url.endsWith("/api/integrations")) {
         return Promise.resolve(Response.json({ items: [{ name: "Kyverno", type: "policy", enabled: true, status: "configured" }] }));
@@ -147,9 +149,11 @@ function mockApi() {
         return Promise.resolve(Response.json({ name: "Kyverno", type: "policy", enabled: true, status: "configured", health: "healthy", dataLastSeen: "2026-07-08T12:00:00Z", permissions: ["Read policyreports"], setupGaps: [], checkedAt: "2026-07-08T12:00:00Z" }));
       }
       if (url.endsWith("/api/settings/model-providers")) {
+        if (!modelSettingsAllowed) return Promise.resolve(Response.json({ error: { code: "permission_denied", message: "insufficient permissions" } }, { status: 403 }));
         return Promise.resolve(Response.json({ providers: [{ name: "primary", type: "openai-compatible", model: "gpt-5", apiKeySecretRef: { name: "kubeathrix-llm", key: "api-key" } }] }));
       }
-      if (url.endsWith("/api/experiments")) return Promise.resolve(Response.json({ items: dashboardPayload().experiments }));
+	  if (url.endsWith("/api/experiments")) return Promise.resolve(Response.json({ items: dashboardPayload().experiments }));
+	  if (url.endsWith("/api/experiment-runs")) return Promise.resolve(Response.json({ items: [] }));
       if (url.endsWith("/api/remediation-plans") && method === "POST") return Promise.resolve(Response.json(planPayload(), { status: 201 }));
       if (url.endsWith("/api/remediation-plans/plan-finding-public-rbac-image-001/diff")) {
         return Promise.resolve(Response.json({ planId: "plan-finding-public-rbac-image-001", mode: "typed-server-side-dry-run", summary: "1 typed action prepared.", manifests: [{ actionType: "propose_security_hardening", target: finding.resources[0], writeMode: "gitops-proposal", diff: "Prepare network policy proposal.", manifest: "" }] }));
@@ -168,8 +172,8 @@ describe("KubeAthrix console", () => {
     mockApi();
     render(<App />);
 
-    expect(await screen.findByText("KubeAthrix")).toBeInTheDocument();
     expect(await screen.findByText("Correlated cluster risk")).toBeInTheDocument();
+    expect(await screen.findByText("KubeAthrix")).toBeInTheDocument();
     expect(await screen.findByText("Open critical")).toBeInTheDocument();
   });
 
@@ -182,6 +186,14 @@ describe("KubeAthrix console", () => {
     await user.click(await screen.findByRole("button", { name: /Generate typed plan/i }));
 
     expect(await screen.findByText("Find, explain, fix, verify, prove")).toBeInTheDocument();
-    expect(await screen.findByText(/Approval required|Deterministic/)).toBeInTheDocument();
+	expect(await screen.findByText("Approval required")).toBeInTheDocument();
+  });
+
+  it("keeps viewer data usable when administrator-only settings are denied", async () => {
+    mockApi(false);
+    render(<App />);
+
+    expect(await screen.findByText("Correlated cluster risk")).toBeInTheDocument();
+    expect(screen.queryByText("API unavailable")).not.toBeInTheDocument();
   });
 });

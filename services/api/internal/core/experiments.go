@@ -3,44 +3,17 @@ package core
 func DefaultChaosExperiments() []ChaosExperiment {
 	return []ChaosExperiment{
 		{
-			ID:          "pod-delete-resilience",
-			Name:        "Pod delete resilience",
-			Category:    "availability",
-			Target:      "Deployment pods",
-			Status:      "ready",
-			Engine:      "litmus",
-			Description: "Deletes one matching pod and verifies the workload recovers through its controller, probes, and disruption budget.",
-			Preflight: []string{
-				"Target deployment has at least two replicas.",
-				"Readiness probes and a PodDisruptionBudget exist.",
-				"Recent rollout is healthy before the experiment starts.",
-			},
-			Manifest: `apiVersion: litmuschaos.io/v1alpha1
-kind: ChaosEngine
-metadata:
-  name: kubeathrix-pod-delete
-  namespace: "{{TARGET_NAMESPACE}}"
-spec:
-  appinfo:
-    appns: "{{TARGET_NAMESPACE}}"
-    applabel: "{{TARGET_LABEL_KEY}}={{TARGET_LABEL_VALUE}}"
-    appkind: deployment
-  chaosServiceAccount: litmus-admin
-  experiments:
-    - name: pod-delete`,
-		},
-		{
 			ID:          "network-latency-service",
 			Name:        "Service network latency",
 			Category:    "network",
 			Target:      "Service-backed pods",
-			Status:      "ready",
+			Status:      "preflight_default_execution_opt_in",
 			Engine:      "chaos-mesh",
-			Description: "Injects bounded latency into selected service pods to verify timeout, retry, and SLO behavior.",
+			Description: "Validates a bounded latency run for selected service pods. Explicitly configured installations persist approval, execution, cleanup, and recovery state.",
 			Preflight: []string{
 				"Target selector resolves to non-system pods.",
 				"Experiment duration and latency are bounded.",
-				"Abort and rollback hooks are available.",
+				"Execution requires durable persistence, a separate approver, and an explicit operator request.",
 			},
 			Manifest: `apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
@@ -49,6 +22,7 @@ metadata:
   namespace: "{{TARGET_NAMESPACE}}"
 spec:
   action: delay
+  direction: to
   mode: one
   selector:
     namespaces:
@@ -66,9 +40,9 @@ spec:
 			Name:        "Workload CPU stress",
 			Category:    "capacity",
 			Target:      "Deployment pods",
-			Status:      "ready",
+			Status:      "preflight_default_execution_opt_in",
 			Engine:      "chaos-mesh",
-			Description: "Applies temporary CPU pressure to verify autoscaling, limits, and alerting behavior.",
+			Description: "Validates bounded CPU pressure. Execution-enabled installations clean up the resource and verify target pod recovery.",
 			Preflight: []string{
 				"Target pods have CPU requests and limits.",
 				"HorizontalPodAutoscaler or runbook owner is defined.",
@@ -97,13 +71,13 @@ spec:
 			Name:        "DNS failure readiness",
 			Category:    "dependency",
 			Target:      "Application namespace",
-			Status:      "ready",
+			Status:      "preflight_default_execution_opt_in",
 			Engine:      "chaos-mesh",
-			Description: "Blocks a controlled DNS query pattern to prove dependency handling and fallback behavior.",
+			Description: "Validates a scoped DNS-failure run with an opt-in persistent execution and recovery lifecycle.",
 			Preflight: []string{
 				"Experiment is scoped to one namespace.",
 				"Target application has health signals visible to KubeAthrix.",
-				"Rollback simply deletes the generated chaos object.",
+				"Execution requires durable persistence, a separate approver, and an explicit operator request.",
 			},
 			Manifest: `apiVersion: chaos-mesh.org/v1alpha1
 kind: DNSChaos

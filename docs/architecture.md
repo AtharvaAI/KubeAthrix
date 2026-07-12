@@ -10,7 +10,7 @@ KubeAthrix is split into three planes:
 - Decision plane: correlates related signals into a single issue graph and creates bounded remediation plans.
 - Execution plane: applies only typed controller actions after dry-run validation and, when required, approval.
 
-The AI model is part of the decision plane. It summarizes evidence and proposes structured plans, but it never receives raw cluster-admin credentials and never emits arbitrary shell commands for execution.
+Version 0.2.0 has no model invocation path. Planning, correlation, risk scoring, and typed action selection are deterministic. Provider-reference settings are inventory-only for a future gateway and are never resolved or called.
 
 ## Components
 
@@ -22,7 +22,18 @@ The AI model is part of the decision plane. It summarizes evidence and proposes 
 
 ## Core Engines
 
-The first install shape enables Trivy Operator, Kyverno, and Kubescape by default through Helm dependency conditions. Falco, Tetragon, Chaos Mesh, and LitmusChaos remain disabled until their Helm values and required privileges are enabled.
+External engines are disabled by default. Trivy Operator, Kyverno, and
+Kubescape can be installed through pinned conditional Helm dependencies;
+Falco, Tetragon, Chaos Mesh, and LitmusChaos require separately reviewed
+installations and privileges before their integration values are enabled.
+
+Opt-in Chaos Mesh execution uses Postgres as the durable run state and
+Kubernetes as the execution observation source. The API persists preflight and
+approval before creation, labels every resource with its run ID, and a
+restart-safe reconciler owns polling, duration enforcement, deletion, abort,
+approval expiry, and recovery verification. A request never becomes `running`
+until Kubernetes acknowledges creation, and never becomes `succeeded` until
+the object is absent and selected pods are Running and Ready.
 
 ## Safety Boundary
 

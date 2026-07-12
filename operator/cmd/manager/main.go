@@ -51,8 +51,9 @@ func main() {
 	}
 
 	if err := (&controllers.RemediationPlanReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		MutationEnabled: os.Getenv("KUBEATHRIX_MUTATION_ENABLED") == "true",
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create remediation plan controller")
 		os.Exit(1)

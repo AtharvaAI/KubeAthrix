@@ -3,107 +3,218 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
-    name: Go tests
+    name: Go format, vet, test, and race
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.1"
+          go-version: "1.25.12"
           cache-dependency-path: |
             services/api/go.sum
             operator/go.sum
+      - name: Verify formatting
+        run: test -z "$(gofmt -l services/api operator pkg/actioncatalog)"
+      - name: Vet
+        run: go vet ./services/api/... ./operator/... ./pkg/actioncatalog/...
+      - name: Unit and reconciliation tests
+        run: go test ./services/api/... ./operator/... ./pkg/actioncatalog/... -count=1
+      - name: Bounded chaos lifecycle tests
+        run: go test ./services/api/internal/cluster -run Chaos -count=1
+      - name: Race tests
+        run: go test -race ./services/api/... ./operator/... ./pkg/actioncatalog/... -count=1
 
-      - name: Run Go tests
-        run: go test ./services/api/... ./operator/... -short
+  postgres:
+    name: Postgres migrations and restart recovery
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+        env:
+          POSTGRES_USER: kubeathrix
+          POSTGRES_PASSWORD: kubeathrix-test
+          POSTGRES_DB: kubeathrix
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kubeathrix"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      KUBEATHRIX_POSTGRES_TEST_URL: postgres://kubeathrix:kubeathrix-test@127.0.0.1:5432/kubeathrix?sslmode=disable
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version: "1.25.12" }
+      - run: go test -tags=integration ./services/api/internal/postgres -count=1 -v
 
   console:
-    name: Console tests and build
+    name: Console typecheck, unit, desktop, and mobile
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "24.7.0" }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          node-version: "24"
+          go-version: "1.25.12"
+          cache-dependency-path: services/api/go.sum
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with: { version: "10.32.1", run_install: false }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @kubeathrix/console build
+      - run: pnpm --filter @kubeathrix/console test
+      - run: pnpm --filter @kubeathrix/console exec playwright install --with-deps chromium
+      - run: pnpm --filter @kubeathrix/console test:e2e
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: "11.7.0"
-          run_install: false
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run console unit tests
-        run: pnpm --filter @kubeathrix/console test
-
-      - name: Build console
-        run: pnpm --filter @kubeathrix/console build
-
-      - name: Install Playwright browsers
-        run: pnpm --filter @kubeathrix/console exec playwright install --with-deps chromium
-
-      - name: Run console smoke tests
-        run: pnpm --filter @kubeathrix/console test:e2e
-
-  helm:
-    name: Helm chart
+  contracts:
+    name: OpenAPI, Helm, CRDs, and manifest security
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with: { version: v3.18.4 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "24.7.0" }
+      - run: node scripts/check-versions.mjs
+      - name: Validate OpenAPI
+        run: npx --yes @redocly/cli@1.34.3 lint services/api/openapi.yaml
+      - run: helm dependency build charts/kubeathrix
+      - run: helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true
+      - name: Render secure and demo configurations
+        run: |
+          helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.insecureDevelopmentMode=true > rendered.yaml
+          helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.oidc.issuerURL=https://issuer.example.test --set auth.oidc.clientID=kubeathrix > rendered-secure.yaml
+          helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.oidc.issuerURL=https://issuer.example.test --set auth.oidc.clientID=kubeathrix --set chaos.execution.enabled=true --set engines.chaosMesh.enabled=true --set 'chaos.namespaceAllowlist={sandbox}' > rendered-chaos.yaml
+      - uses: docker://ghcr.io/yannh/kubeconform:v0.7.0@sha256:85dbef6b4b312b99133decc9c6fc9495e9fc5f92293d4ff3b7e1b30f5611823c
+        with:
+          args: "-strict -summary -ignore-missing-schemas rendered.yaml rendered-secure.yaml rendered-chaos.yaml"
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: config
+          scan-ref: rendered-secure.yaml
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: config
+          scan-ref: rendered-chaos.yaml
+          severity: HIGH,CRITICAL
+          exit-code: "1"
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
+  security:
+    name: Dependencies, SAST, licenses, and secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version: "1.25.12" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "24.7.0" }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with: { version: "10.32.1", run_install: false }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+      - name: Go vulnerability analysis
+        run: |
+          (cd services/api && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd operator && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd pkg/actioncatalog && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+      - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.22.8 ./services/api/... ./operator/...
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify dependency licenses
+        run: go run github.com/google/go-licenses@v1.6.0 check ./services/api/... ./operator/... --ignore github.com/atharvaai/kubeathrix --allowed_licenses=Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0
 
-      - name: Build chart dependencies
-        run: helm dependency build charts/kubeathrix
-
-      - name: Lint chart
-        run: helm lint charts/kubeathrix
-
-      - name: Render chart
-        run: helm template kubeathrix charts/kubeathrix -n kubeathrix > /tmp/kubeathrix-rendered.yaml
-
-  docker:
-    name: Docker build smoke
+  images:
+    name: Build, SBOM, and scan ${{ matrix.component }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - component: api
-            dockerfile: services/api/Dockerfile
-          - component: console
-            dockerfile: apps/console/Dockerfile
-          - component: operator
-            dockerfile: operator/Dockerfile
+          - { component: api, dockerfile: services/api/Dockerfile }
+          - { component: console, dockerfile: apps/console/Dockerfile }
+          - { component: operator, dockerfile: operator/Dockerfile }
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image without pushing
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          push: false
+          load: true
           tags: kubeathrix/${{ matrix.component }}:ci
+          build-args: |
+            VERSION=0.2.0-ci
+            REVISION=${{ github.sha }}
+      - uses: anchore/sbom-action@df80a981bc6edbc4e220a492d3cbe9f5547a6e75 # v0.17.9
+        with:
+          image: kubeathrix/${{ matrix.component }}:ci
+          output-file: ${{ matrix.component }}.spdx.json
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: kubeathrix/${{ matrix.component }}:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  kind:
+    name: Kind installation smoke test
+    runs-on: ubuntu-latest
+    needs: [go, console, contracts]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: kubeathrix-ci
+          node_image: kindest/node:v1.33.4@sha256:25a6018e48dfcaee478f4a59af81157a437f15e6e140bf103f85a2e7cd0cbbf2
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with: { version: v3.18.4 }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+          cache-dependency-path: services/api/go.sum
+      - env:
+          CORE_IMAGE: kubeathrix/api
+        run: |
+          docker build -f services/api/Dockerfile -t kubeathrix/api:ci .
+          docker build -f apps/console/Dockerfile -t kubeathrix/console:ci .
+          docker build -f operator/Dockerfile -t kubeathrix/operator:ci .
+          kind load docker-image --name kubeathrix-ci kubeathrix/api:ci kubeathrix/console:ci kubeathrix/operator:ci
+          helm dependency build charts/kubeathrix
+          helm upgrade --install kubeathrix charts/kubeathrix -n kubeathrix --create-namespace --wait --timeout 5m \
+            --set auth.insecureDevelopmentMode=true \
+            --set image.api.repository="$CORE_IMAGE" --set image.api.tag=ci --set image.api.pullPolicy=Never \
+            --set image.console.repository=kubeathrix/console --set image.console.tag=ci --set image.console.pullPolicy=Never \
+            --set image.operator.repository=kubeathrix/operator --set image.operator.tag=ci --set image.operator.pullPolicy=Never
+          kubectl -n kubeathrix get pods
+          kubectl -n kubeathrix rollout status deploy/kubeathrix-api --timeout=2m
+          kubectl -n kubeathrix rollout status deploy/kubeathrix-operator --timeout=2m
+          helm test kubeathrix -n kubeathrix --logs --timeout 2m
+      - name: Real bounded Chaos Mesh lifecycle
+        env:
+          KUBEATHRIX_CHAOS_E2E: "true"
+        run: |
+          helm repo add chaos-mesh https://charts.chaos-mesh.org
+          helm repo update
+          helm upgrade --install chaos-mesh chaos-mesh/chaos-mesh --version 2.8.3 -n chaos-mesh --create-namespace --wait --timeout 5m \
+            --set chaosDaemon.runtime=containerd \
+            --set chaosDaemon.socketPath=/run/containerd/containerd.sock \
+            --set dashboard.create=false \
+            --set controllerManager.replicaCount=1 \
+            --set controllerManager.leaderElection.enabled=false
+          go test ./services/api/internal/cluster -run '^TestChaosMeshLifecycleIntegration$' -count=1 -v

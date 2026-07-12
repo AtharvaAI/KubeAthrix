@@ -12,21 +12,38 @@ spec:
       app.kubernetes.io/component: console
   template:
     metadata:
+      annotations:
+        checksum/nginx-config: {{ include (print $.Template.BasePath "/console-nginx-config.yaml") . | sha256sum }}
       labels:
         {{- include "kubeathrix.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: console
     spec:
       serviceAccountName: {{ include "kubeathrix.fullname" . }}-console
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: console
-          image: "{{ .Values.image.console.repository }}:{{ .Values.image.console.tag }}"
+          image: {{ if .Values.image.console.digest }}"{{ .Values.image.console.repository }}@{{ .Values.image.console.digest }}"{{ else }}"{{ .Values.image.console.repository }}:{{ .Values.image.console.tag }}"{{ end }}
           imagePullPolicy: {{ .Values.image.console.pullPolicy }}
+          # The chart supplies a complete immutable ConfigMap configuration,
+          # so bypass the image's envsubst entrypoint that would attempt to
+          # rewrite the read-only default.conf mount.
+          command: ["nginx"]
+          args: ["-g", "daemon off;"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
-              containerPort: 80
-          env:
-            - name: KUBEATHRIX_API_UPSTREAM
-              value: http://{{ include "kubeathrix.fullname" . }}-api:{{ .Values.service.api.port }}
+              containerPort: 8080
           readinessProbe:
             httpGet:
               path: /
@@ -37,3 +54,24 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.resources.console | nindent 12 }}
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: {{ include "kubeathrix.fullname" . }}-console-nginx
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

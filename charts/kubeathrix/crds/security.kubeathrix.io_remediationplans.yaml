@@ -41,11 +41,14 @@ spec:
                 - rootCause
                 - actions
                 - riskTier
-                - dryRunResult
                 - verificationSteps
                 - rollbackSteps
                 - approvalPolicy
               properties:
+                catalogVersion:
+                  type: string
+                  enum: ["v1"]
+                  default: "v1"
                 findingRef:
                   type: object
                   required: ["name"]
@@ -87,6 +90,26 @@ spec:
                 riskTier:
                   type: string
                   enum: ["A", "B", "C", "D"]
+                executionRequested:
+                  type: boolean
+                  default: false
+                executionRequestedBy:
+                  type: string
+                executionRequestedAt:
+                  type: string
+                  format: date-time
+                runName:
+                  type: string
+                  minLength: 1
+                  maxLength: 63
+                rollbackRequested:
+                  type: boolean
+                  default: false
+                rollbackRequestedBy:
+                  type: string
+                rollbackRequestedAt:
+                  type: string
+                  format: date-time
                 dryRunResult:
                   type: object
                   required: ["passed", "message"]
@@ -109,6 +132,9 @@ spec:
                   properties:
                     required:
                       type: boolean
+                    decision:
+                      type: string
+                      enum: ["pending", "approved", "rejected", "expired"]
                     categories:
                       type: array
                       items:
@@ -120,7 +146,6 @@ spec:
                   type: string
                 observedGeneration:
                   type: integer
-                  format: int64
                 lastTransitionTime:
                   type: string
                   format: date-time

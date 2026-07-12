@@ -35,7 +35,7 @@ docker compose -f deploy/docker-compose.images.yaml up
 Then open:
 
 - Console: http://127.0.0.1:5173
-- API health: http://127.0.0.1:8080/api/health
+- API readiness: http://127.0.0.1:8080/health/ready
 
 To use rolling tags instead of a pinned version, override the compose image tags:
 
@@ -53,6 +53,7 @@ The chart defaults to the pinned published image tags.
 ```powershell
 helm dependency build charts/kubeathrix
 helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
+  --set auth.insecureDevelopmentMode=true `
   --set image.api.repository=docker.io/prashantdey/kubeathrix `
   --set image.api.tag=api-0.2.0 `
   --set image.console.repository=docker.io/prashantdey/kubeathrix `

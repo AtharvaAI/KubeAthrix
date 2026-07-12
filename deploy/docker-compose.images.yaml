@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
     environment:
       POSTGRES_DB: kubeathrix
       POSTGRES_USER: kubeathrix
@@ -21,7 +21,15 @@ services:
     # x-release-please-end
     environment:
       DATABASE_URL: postgres://kubeathrix:kubeathrix@postgres:5432/kubeathrix?sslmode=disable
-      KUBEATHRIX_DEV_AUTH: "true"
+      KUBEATHRIX_INSECURE_DEV_AUTH: "true"
+      KUBEATHRIX_INSECURE_MEMORY_WORKFLOWS: "true"
+      KUBEATHRIX_ADAPTERS_ENABLED: ${KUBEATHRIX_ADAPTERS_ENABLED:-true}
+      KUBEATHRIX_OTEL_TRACING_ENABLED: ${KUBEATHRIX_OTEL_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      KUBEATHRIX_OTEL_INSECURE: ${KUBEATHRIX_OTEL_INSECURE:-false}
+      KUBEATHRIX_OTEL_SAMPLE_RATIO: ${KUBEATHRIX_OTEL_SAMPLE_RATIO:-0.1}
+      KUBEATHRIX_OTEL_EXPORT_TIMEOUT: ${KUBEATHRIX_OTEL_EXPORT_TIMEOUT:-5s}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,7 +45,7 @@ services:
     depends_on:
       - kubeathrix-api
     ports:
-      - "5173:80"
+      - "5173:8080"
 
 volumes:
   kubeathrix-postgres:

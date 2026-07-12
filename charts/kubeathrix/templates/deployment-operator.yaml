@@ -17,14 +17,31 @@ spec:
         app.kubernetes.io/component: operator
     spec:
       serviceAccountName: {{ include "kubeathrix.fullname" . }}-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: manager
-          image: "{{ .Values.image.operator.repository }}:{{ .Values.image.operator.tag }}"
+          image: {{ if .Values.image.operator.digest }}"{{ .Values.image.operator.repository }}@{{ .Values.image.operator.digest }}"{{ else }}"{{ .Values.image.operator.repository }}:{{ .Values.image.operator.tag }}"{{ end }}
           imagePullPolicy: {{ .Values.image.operator.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           args:
             - --health-probe-bind-address=:8081
             - --leader-elect
+          env:
+            - name: KUBEATHRIX_MUTATION_ENABLED
+              value: {{ .Values.remediation.mutationEnabled | quote }}
           ports:
+            - name: metrics
+              containerPort: 8080
             - name: probes
               containerPort: 8081
           readinessProbe:

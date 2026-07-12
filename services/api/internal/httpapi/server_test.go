@@ -2,13 +2,19 @@ package httpapi_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/atharvaai/kubeathrix/services/api/internal/auth"
+	"github.com/atharvaai/kubeathrix/services/api/internal/cluster"
 	"github.com/atharvaai/kubeathrix/services/api/internal/core"
 	"github.com/atharvaai/kubeathrix/services/api/internal/httpapi"
 	"github.com/atharvaai/kubeathrix/services/api/internal/store"
@@ -25,8 +31,17 @@ func testServer() http.Handler {
 			{Name: "Kubescape", Type: "scanner", Enabled: true, Status: "configured"},
 		}),
 	)
-	return httpapi.NewServer(repo, httpapi.Config{DevAuthEnabled: true}).Routes()
+	return httpapi.NewServer(repo, httpapi.Config{InsecureDevAuth: true, AllowMemoryWorkflows: true}).Routes()
 }
+
+func jsonRequest(method, path string, body io.Reader) *http.Request {
+	request := httptest.NewRequest(method, path, body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", fmt.Sprintf("test-key-%08d", testRequestSequence.Add(1)))
+	return request
+}
+
+var testRequestSequence atomic.Uint64
 
 func testFindings(now time.Time) []core.Finding {
 	return []core.Finding{
@@ -131,6 +146,113 @@ func TestFindingFilters(t *testing.T) {
 	}
 }
 
+func TestEmptyCollectionEndpointsReturnArrays(t *testing.T) {
+	handler := httpapi.NewServer(
+		store.NewMemoryStore(store.WithIntegrations(nil)),
+		httpapi.Config{InsecureDevAuth: true, AllowMemoryWorkflows: true},
+	).Routes()
+	for _, path := range []string{"/api/findings", "/api/exceptions", "/api/audit-events", "/api/integrations"} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+			}
+			var payload struct {
+				Items json.RawMessage `json:"items"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if string(payload.Items) != "[]" {
+				t.Fatalf("items must be an empty JSON array, got %s", payload.Items)
+			}
+		})
+	}
+}
+
+func TestFindingPaginationSortingAndStructuredFilters(t *testing.T) {
+	handler := testServer()
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/findings?namespace=payments&kind=Deployment&minRisk=80&sort=title&order=asc&limit=1", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+	var page core.FindingListResponse
+	if err := json.NewDecoder(first.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("unexpected filtered page: %#v", page)
+	}
+
+	all := httptest.NewRecorder()
+	handler.ServeHTTP(all, httptest.NewRequest(http.MethodGet, "/api/findings?limit=2&sort=updated&order=desc", nil))
+	if err := json.NewDecoder(all.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 4 || len(page.Items) != 2 || page.NextCursor == "" {
+		t.Fatalf("unexpected first page: %#v", page)
+	}
+	next := httptest.NewRecorder()
+	handler.ServeHTTP(next, httptest.NewRequest(http.MethodGet, "/api/findings?limit=2&sort=updated&order=desc&cursor="+page.NextCursor, nil))
+	var second core.FindingListResponse
+	if err := json.NewDecoder(next.Body).Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Items) != 2 || second.Items[0].ID == page.Items[0].ID {
+		t.Fatalf("cursor did not advance: %#v", second)
+	}
+}
+
+func TestFindingLifecycleAndExceptionAudit(t *testing.T) {
+	handler := testServer()
+	statusResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statusResponse, jsonRequest(http.MethodPatch, "/api/findings/finding-namespace-quota/status", bytes.NewBufferString(`{"status":"in_review","reason":"triage owner assigned"}`)))
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("status transition failed: %d %s", statusResponse.Code, statusResponse.Body.String())
+	}
+
+	exceptionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(exceptionResponse, jsonRequest(http.MethodPost, "/api/exceptions", bytes.NewBufferString(`{"scope":"finding-namespace-quota","reason":"approved lab exception","expiresAt":"2026-07-09T12:00:00Z"}`)))
+	if exceptionResponse.Code != http.StatusCreated {
+		t.Fatalf("exception creation failed: %d %s", exceptionResponse.Code, exceptionResponse.Body.String())
+	}
+	var exception core.Exception
+	if err := json.NewDecoder(exceptionResponse.Body).Decode(&exception); err != nil {
+		t.Fatal(err)
+	}
+	if exception.Owner == "" || exception.Status != "active" {
+		t.Fatalf("exception lacks derived owner/state: %#v", exception)
+	}
+
+	findingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(findingResponse, httptest.NewRequest(http.MethodGet, "/api/findings/finding-namespace-quota", nil))
+	var finding core.Finding
+	if err := json.NewDecoder(findingResponse.Body).Decode(&finding); err != nil {
+		t.Fatal(err)
+	}
+	if finding.Status != core.FindingSuppressed {
+		t.Fatalf("finding was not suppressed: %#v", finding)
+	}
+
+	deleteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResponse, httptest.NewRequest(http.MethodDelete, "/api/exceptions/"+exception.ID, nil))
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("exception deletion failed: %d %s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+}
+
+func TestMetricsEndpointIsAuthenticatedAndPrometheusFormatted(t *testing.T) {
+	handler := testServer()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/metrics", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "kubeathrix_http_requests_total") {
+		t.Fatalf("unexpected metrics response: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDashboardAggregation(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
 	res := httptest.NewRecorder()
@@ -155,8 +277,8 @@ func TestDashboardAggregation(t *testing.T) {
 }
 
 func TestCreatePlanUsesTypedActionsOnly(t *testing.T) {
-	body := bytes.NewBufferString(`{"findingId":"finding-public-rbac-image","requestedBy":"platform-sre"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/remediation-plans", body)
+	body := bytes.NewBufferString(`{"findingId":"finding-public-rbac-image"}`)
+	req := jsonRequest(http.MethodPost, "/api/remediation-plans", body)
 	res := httptest.NewRecorder()
 	testServer().ServeHTTP(res, req)
 
@@ -181,8 +303,8 @@ func TestCreatePlanUsesTypedActionsOnly(t *testing.T) {
 
 func TestPlanPreviewDiffAndEvidenceBundle(t *testing.T) {
 	handler := testServer()
-	previewBody := bytes.NewBufferString(`{"findingId":"finding-namespace-quota","requestedBy":"platform-sre"}`)
-	previewReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans/preview", previewBody)
+	previewBody := bytes.NewBufferString(`{"findingId":"finding-namespace-quota"}`)
+	previewReq := jsonRequest(http.MethodPost, "/api/remediation-plans/preview", previewBody)
 	previewRes := httptest.NewRecorder()
 	handler.ServeHTTP(previewRes, previewReq)
 	if previewRes.Code != http.StatusOK {
@@ -196,8 +318,8 @@ func TestPlanPreviewDiffAndEvidenceBundle(t *testing.T) {
 		t.Fatal("preview must include evidence hash and citations")
 	}
 
-	createBody := bytes.NewBufferString(`{"findingId":"finding-namespace-quota","requestedBy":"platform-sre"}`)
-	createReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans", createBody)
+	createBody := bytes.NewBufferString(`{"findingId":"finding-namespace-quota"}`)
+	createReq := jsonRequest(http.MethodPost, "/api/remediation-plans", createBody)
 	createRes := httptest.NewRecorder()
 	handler.ServeHTTP(createRes, createReq)
 	if createRes.Code != http.StatusCreated {
@@ -220,7 +342,7 @@ func TestPlanPreviewDiffAndEvidenceBundle(t *testing.T) {
 	if len(diff.Manifests) == 0 || diff.Manifests[0].WriteMode == "" {
 		t.Fatal("diff must expose planned manifests and write mode")
 	}
-	executeReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans/"+plan.ID+"/execute", bytes.NewBufferString(`{"actor":"platform-sre"}`))
+	executeReq := jsonRequest(http.MethodPost, "/api/remediation-plans/"+plan.ID+"/execute", bytes.NewBufferString(`{}`))
 	executeRes := httptest.NewRecorder()
 	handler.ServeHTTP(executeRes, executeReq)
 	if executeRes.Code != http.StatusAccepted {
@@ -243,8 +365,8 @@ func TestPlanPreviewDiffAndEvidenceBundle(t *testing.T) {
 
 func TestExecuteRequiresApprovalForGatedPlan(t *testing.T) {
 	handler := testServer()
-	createBody := bytes.NewBufferString(`{"findingId":"finding-missing-probes-pdb","requestedBy":"platform-sre"}`)
-	createReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans", createBody)
+	createBody := bytes.NewBufferString(`{"findingId":"finding-missing-probes-pdb"}`)
+	createReq := jsonRequest(http.MethodPost, "/api/remediation-plans", createBody)
 	createRes := httptest.NewRecorder()
 	handler.ServeHTTP(createRes, createReq)
 	if createRes.Code != http.StatusCreated {
@@ -254,7 +376,7 @@ func TestExecuteRequiresApprovalForGatedPlan(t *testing.T) {
 	if err := json.NewDecoder(createRes.Body).Decode(&plan); err != nil {
 		t.Fatal(err)
 	}
-	executeReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans/"+plan.ID+"/execute", bytes.NewBufferString(`{"actor":"platform-sre"}`))
+	executeReq := jsonRequest(http.MethodPost, "/api/remediation-plans/"+plan.ID+"/execute", bytes.NewBufferString(`{}`))
 	executeRes := httptest.NewRecorder()
 	handler.ServeHTTP(executeRes, executeReq)
 	if executeRes.Code != http.StatusBadRequest {
@@ -294,8 +416,8 @@ func TestFindingGroupingAndIntegrationHealth(t *testing.T) {
 
 func TestApprovalTransitionCreatesAuditEvent(t *testing.T) {
 	handler := testServer()
-	createBody := bytes.NewBufferString(`{"findingId":"finding-missing-probes-pdb","requestedBy":"platform-sre"}`)
-	createReq := httptest.NewRequest(http.MethodPost, "/api/remediation-plans", createBody)
+	createBody := bytes.NewBufferString(`{"findingId":"finding-missing-probes-pdb"}`)
+	createReq := jsonRequest(http.MethodPost, "/api/remediation-plans", createBody)
 	createRes := httptest.NewRecorder()
 	handler.ServeHTTP(createRes, createReq)
 	if createRes.Code != http.StatusCreated {
@@ -306,8 +428,8 @@ func TestApprovalTransitionCreatesAuditEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	approveBody := bytes.NewBufferString(`{"actor":"sre-lead","reason":"probe path confirmed in staging"}`)
-	approveReq := httptest.NewRequest(http.MethodPost, "/api/approvals/approval-"+plan.ID+"/approve", approveBody)
+	approveBody := bytes.NewBufferString(`{"reason":"probe path confirmed in staging"}`)
+	approveReq := jsonRequest(http.MethodPost, "/api/approvals/approval-"+plan.ID+"/approve", approveBody)
 	approveRes := httptest.NewRecorder()
 	handler.ServeHTTP(approveRes, approveReq)
 	if approveRes.Code != http.StatusOK {
@@ -329,15 +451,342 @@ func TestApprovalTransitionCreatesAuditEvent(t *testing.T) {
 	if auditPayload.Items[0].Action != "approval.approved" {
 		t.Fatalf("expected latest audit to be approval.approved, got %s", auditPayload.Items[0].Action)
 	}
+	runRequest := httptest.NewRequest(http.MethodGet, "/api/remediation-runs/run-"+plan.ID, nil)
+	runResponse := httptest.NewRecorder()
+	handler.ServeHTTP(runResponse, runRequest)
+	if runResponse.Code != http.StatusOK {
+		t.Fatalf("expected run 200, got %d: %s", runResponse.Code, runResponse.Body.String())
+	}
+	var run core.RemediationRun
+	if err := json.NewDecoder(runResponse.Body).Decode(&run); err != nil {
+		t.Fatal(err)
+	}
+	if run.State == core.RunSucceeded || run.State == core.RunRunning || run.State == core.RunDryRunPassed {
+		t.Fatalf("approval must not imply cluster execution or validation, got state %q", run.State)
+	}
 }
 
 func TestModelProviderRejectsInlineSecrets(t *testing.T) {
 	body := bytes.NewBufferString(`{"providers":[{"name":"primary","type":"openai-compatible","model":"gpt-5","apiKey":"leaked"}]}`)
-	req := httptest.NewRequest(http.MethodPut, "/api/settings/model-providers", body)
+	req := jsonRequest(http.MethodPut, "/api/settings/model-providers", body)
 	res := httptest.NewRecorder()
 	testServer().ServeHTTP(res, req)
 
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("expected strict decoder to reject inline apiKey, got %d", res.Code)
+	}
+}
+
+func TestChaosPreflightRunIsPersistedAndAudited(t *testing.T) {
+	repo := store.NewMemoryStore()
+	manager := cluster.NewChaosManager(repo, cluster.NewChaosPreflightRunner("sandbox"), false, nil)
+	handler := httpapi.NewServer(repo, httpapi.Config{InsecureDevAuth: true, AllowMemoryWorkflows: true, ChaosManager: manager}).Routes()
+	body := bytes.NewBufferString(`{"manifest":"apiVersion: chaos-mesh.org/v1alpha1\nkind: NetworkChaos\nmetadata:\n  name: latency\n  namespace: sandbox\nspec:\n  action: delay\n  direction: to\n  mode: one\n  selector:\n    namespaces: [sandbox]\n    labelSelectors:\n      app: checkout\n  delay:\n    latency: 100ms\n  duration: 60s"}`)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/experiments/custom/runs", body))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var run core.ChaosExperimentRun
+	if err := json.NewDecoder(response.Body).Decode(&run); err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != core.ChaosPreflightValidated || run.RequestedBy == "" || run.Version != 1 {
+		t.Fatalf("unexpected persisted preflight: %#v", run)
+	}
+	get := httptest.NewRecorder()
+	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/experiment-runs/"+run.ID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected persisted run 200, got %d: %s", get.Code, get.Body.String())
+	}
+	events, err := repo.ListAuditEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Action != "chaos.preflight.validated" {
+		t.Fatalf("unexpected chaos audit events: %#v", events)
+	}
+}
+
+func TestProtectedRoutesFailClosedAndProbesRemainAvailable(t *testing.T) {
+	repo := store.NewMemoryStore()
+	handler := httpapi.NewServer(repo, httpapi.Config{
+		Authenticator:        auth.StaticVerifier{Principal: auth.DevelopmentPrincipal()},
+		AllowMemoryWorkflows: true,
+	}).Routes()
+
+	protected := httptest.NewRecorder()
+	handler.ServeHTTP(protected, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if protected.Code != http.StatusUnauthorized {
+		t.Fatalf("expected protected route to return 401, got %d: %s", protected.Code, protected.Body.String())
+	}
+	if protected.Header().Get("X-Request-ID") == "" || protected.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("expected request ID and security headers on authentication failure")
+	}
+
+	for _, path := range []string{"/health/live", "/health/ready"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("expected public probe %s to return 200, got %d", path, response.Code)
+		}
+	}
+}
+
+func TestRoleAndNamespaceScopesAndDerivedActor(t *testing.T) {
+	fixed := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	repo := store.NewMemoryStore(store.WithClock(func() time.Time { return fixed }), store.WithFindings(testFindings(fixed)))
+	principal := auth.Principal{
+		Subject:     "user-42",
+		DisplayName: "platform-operator",
+		Roles:       map[auth.Role]struct{}{auth.RoleOperator: {}},
+		Namespaces:  map[string]struct{}{"payments": {}},
+		Clusters:    map[string]struct{}{},
+	}
+	handler := httpapi.NewServer(repo, httpapi.Config{
+		Authenticator:        auth.StaticVerifier{Principal: principal},
+		ClusterID:            "cluster-a",
+		AllowMemoryWorkflows: true,
+	}).Routes()
+	authorized := func(request *http.Request) *http.Request {
+		request.Header.Set("Authorization", "Bearer test-token")
+		return request
+	}
+
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, authorized(httptest.NewRequest(http.MethodGet, "/api/findings", nil)))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("expected scoped finding list 200, got %d: %s", listResponse.Code, listResponse.Body.String())
+	}
+	var list core.FindingListResponse
+	if err := json.NewDecoder(listResponse.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Resources[0].Namespace != "payments" {
+		t.Fatalf("namespace scope leaked findings: %#v", list.Items)
+	}
+
+	dashboardResponse := httptest.NewRecorder()
+	handler.ServeHTTP(dashboardResponse, authorized(httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)))
+	if dashboardResponse.Code != http.StatusForbidden {
+		t.Fatalf("expected cluster dashboard to require cluster scope, got %d", dashboardResponse.Code)
+	}
+
+	impersonationResponse := httptest.NewRecorder()
+	impersonationRequest := jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"finding-public-rbac-image","requestedBy":"someone-else"}`))
+	handler.ServeHTTP(impersonationResponse, authorized(impersonationRequest))
+	if impersonationResponse.Code != http.StatusBadRequest {
+		t.Fatalf("expected client requester field to be rejected, got %d: %s", impersonationResponse.Code, impersonationResponse.Body.String())
+	}
+
+	createResponse := httptest.NewRecorder()
+	createRequest := jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"finding-public-rbac-image"}`))
+	handler.ServeHTTP(createResponse, authorized(createRequest))
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("expected scoped operator to create a plan, got %d: %s", createResponse.Code, createResponse.Body.String())
+	}
+	events, err := repo.ListAuditEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Actor != principal.Actor() {
+		t.Fatalf("expected actor to come from authenticated principal, got %#v", events)
+	}
+}
+
+func TestViewerCannotCreatePlans(t *testing.T) {
+	fixed := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	repo := store.NewMemoryStore(store.WithClock(func() time.Time { return fixed }), store.WithFindings(testFindings(fixed)))
+	principal := auth.Principal{
+		Subject:  "read-only-user",
+		Roles:    map[auth.Role]struct{}{auth.RoleViewer: {}},
+		Clusters: map[string]struct{}{"cluster-a": {}},
+	}
+	handler := httpapi.NewServer(repo, httpapi.Config{Authenticator: auth.StaticVerifier{Principal: principal}, ClusterID: "cluster-a", AllowMemoryWorkflows: true}).Routes()
+	request := jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"finding-namespace-quota"}`))
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected viewer plan creation to return 403, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRequestLimitsRateLimitsAndErrorEnvelope(t *testing.T) {
+	handler := httpapi.NewServer(store.NewMemoryStore(), httpapi.Config{
+		InsecureDevAuth:      true,
+		AllowMemoryWorkflows: true,
+		MaxRequestBytes:      32,
+		RateLimitPerMinute:   2,
+	}).Routes()
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected first request 200, got %d", first.Code)
+	}
+
+	tooLargeRequest := jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"this-value-is-far-longer-than-the-request-limit"}`))
+	tooLarge := httptest.NewRecorder()
+	handler.ServeHTTP(tooLarge, tooLargeRequest)
+	if tooLarge.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected request limit 413, got %d: %s", tooLarge.Code, tooLarge.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Code      string `json:"code"`
+			RequestID string `json:"requestId"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(tooLarge.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "request_too_large" || envelope.Error.RequestID == "" {
+		t.Fatalf("unexpected error envelope: %#v", envelope)
+	}
+
+	rateLimited := httptest.NewRecorder()
+	handler.ServeHTTP(rateLimited, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if rateLimited.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected third request to be rate limited, got %d: %s", rateLimited.Code, rateLimited.Body.String())
+	}
+}
+
+type recordingWorkflowClient struct {
+	createdPlanID string
+	createdActor  string
+	run           core.RemediationRun
+}
+
+func (c *recordingWorkflowClient) ListFindings(context.Context) ([]core.Finding, error) {
+	return nil, nil
+}
+
+func (c *recordingWorkflowClient) GetFinding(context.Context, string) (core.Finding, error) {
+	return core.Finding{}, store.ErrNotFound
+}
+
+func (c *recordingWorkflowClient) ListRuns(context.Context) ([]core.RemediationRun, error) {
+	if c.run.ID == "" {
+		return nil, nil
+	}
+	return []core.RemediationRun{c.run}, nil
+}
+
+func (c *recordingWorkflowClient) RenderDiff(_ context.Context, plan core.RemediationPlan) (core.RemediationDiff, error) {
+	return store.BuildRemediationDiff(plan), nil
+}
+
+func (c *recordingWorkflowClient) Health(context.Context) error { return nil }
+
+func (c *recordingWorkflowClient) CreatePlan(_ context.Context, _ core.Finding, plan core.RemediationPlan, actor string) error {
+	c.createdPlanID = plan.ID
+	c.createdActor = actor
+	return nil
+}
+
+func (c *recordingWorkflowClient) DecideApproval(_ context.Context, approvalID string, decision core.ApprovalStatus, actor, reason string) (core.ApprovalRequest, error) {
+	return core.ApprovalRequest{ID: approvalID, Status: decision, Approver: actor, DecisionReason: reason}, nil
+}
+
+func (c *recordingWorkflowClient) RequestExecution(_ context.Context, planID, _ string) (core.RemediationRun, error) {
+	return core.RemediationRun{ID: "run-" + planID, PlanID: planID, State: core.RunExecutionRequested}, nil
+}
+
+func (c *recordingWorkflowClient) RequestRollback(_ context.Context, runID, _ string) (core.RemediationRun, error) {
+	run := c.run
+	run.ID = runID
+	run.State = core.RunRollbackRequested
+	return run, nil
+}
+
+func (c *recordingWorkflowClient) GetRun(_ context.Context, runID string) (core.RemediationRun, error) {
+	if c.run.ID == runID {
+		return c.run, nil
+	}
+	return core.RemediationRun{}, store.ErrNotFound
+}
+
+func TestPlanCreationAndRunReadsUseKubernetesWorkflowClient(t *testing.T) {
+	fixed := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	repo := store.NewMemoryStore(store.WithClock(func() time.Time { return fixed }), store.WithFindings(testFindings(fixed)))
+	workflow := &recordingWorkflowClient{}
+	handler := httpapi.NewServer(repo, httpapi.Config{InsecureDevAuth: true, WorkflowClient: workflow}).Routes()
+	create := jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"finding-namespace-quota"}`))
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("expected plan create 201, got %d: %s", createResponse.Code, createResponse.Body.String())
+	}
+	var plan core.RemediationPlan
+	if err := json.NewDecoder(createResponse.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if workflow.createdPlanID != plan.ID || workflow.createdActor != auth.DevelopmentPrincipal().Actor() {
+		t.Fatalf("plan was not persisted with derived actor: %#v", workflow)
+	}
+	workflow.run = core.RemediationRun{
+		ID: "run-" + plan.ID, PlanID: plan.ID, State: core.RunSucceeded,
+		ValidationResult: "cluster object read back and source finding no longer reproduced",
+	}
+	runResponse := httptest.NewRecorder()
+	handler.ServeHTTP(runResponse, httptest.NewRequest(http.MethodGet, "/api/remediation-runs/"+workflow.run.ID, nil))
+	if runResponse.Code != http.StatusOK {
+		t.Fatalf("expected CRD-backed run 200, got %d: %s", runResponse.Code, runResponse.Body.String())
+	}
+	var run core.RemediationRun
+	if err := json.NewDecoder(runResponse.Body).Decode(&run); err != nil {
+		t.Fatal(err)
+	}
+	if run.State != core.RunSucceeded || run.ValidationResult != workflow.run.ValidationResult {
+		t.Fatalf("API did not use authoritative workflow state: %#v", run)
+	}
+	rollbackRequest := jsonRequest(http.MethodPost, "/api/remediation-runs/"+workflow.run.ID+"/rollback", bytes.NewBufferString(`{}`))
+	rollbackResponse := httptest.NewRecorder()
+	handler.ServeHTTP(rollbackResponse, rollbackRequest)
+	if rollbackResponse.Code != http.StatusAccepted {
+		t.Fatalf("expected rollback request 202, got %d: %s", rollbackResponse.Code, rollbackResponse.Body.String())
+	}
+	var rollback core.RemediationRun
+	if err := json.NewDecoder(rollbackResponse.Body).Decode(&rollback); err != nil {
+		t.Fatal(err)
+	}
+	if rollback.State != core.RunRollbackRequested {
+		t.Fatalf("rollback endpoint claimed an unsupported state: %#v", rollback)
+	}
+}
+
+func TestPlanCreationIsIdempotentAndDetectsKeyReuse(t *testing.T) {
+	fixed := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	repo := store.NewMemoryStore(store.WithClock(func() time.Time { return fixed }), store.WithFindings(testFindings(fixed)))
+	handler := httpapi.NewServer(repo, httpapi.Config{InsecureDevAuth: true, AllowMemoryWorkflows: true}).Routes()
+	create := func(findingID string) (int, core.RemediationPlan) {
+		request := jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"`+findingID+`"}`))
+		request.Header.Set("Idempotency-Key", "stable-request-key")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		var plan core.RemediationPlan
+		if response.Code == http.StatusCreated {
+			if err := json.NewDecoder(response.Body).Decode(&plan); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return response.Code, plan
+	}
+	firstStatus, first := create("finding-namespace-quota")
+	secondStatus, second := create("finding-namespace-quota")
+	if firstStatus != http.StatusCreated || secondStatus != http.StatusCreated || first.ID == "" || first.ID != second.ID {
+		t.Fatalf("idempotent retry created different results: %d %#v / %d %#v", firstStatus, first, secondStatus, second)
+	}
+	events, err := repo.ListAuditEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("idempotent retry must not duplicate audit events, got %d", len(events))
+	}
+	conflictStatus, _ := create("finding-missing-probes-pdb")
+	if conflictStatus != http.StatusConflict {
+		t.Fatalf("expected reused key with different request to return 409, got %d", conflictStatus)
 	}
 }

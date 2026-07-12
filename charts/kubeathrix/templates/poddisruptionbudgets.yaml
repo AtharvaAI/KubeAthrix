@@ -1,0 +1,16 @@
+{{- $root := . -}}
+{{- range $component := list "api" "console" "operator" }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kubeathrix.fullname" $root }}-{{ $component }}
+  labels:
+    {{- include "kubeathrix.labels" $root | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "kubeathrix.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+---
+{{- end }}

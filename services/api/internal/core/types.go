@@ -20,6 +20,7 @@ const (
 	FindingRemediating FindingStatus = "remediating"
 	FindingResolved    FindingStatus = "resolved"
 	FindingSuppressed  FindingStatus = "suppressed"
+	FindingExpired     FindingStatus = "expired"
 )
 
 type Fixability string
@@ -52,12 +53,18 @@ const (
 type RunState string
 
 const (
-	RunPendingApproval RunState = "pending_approval"
-	RunDryRunPassed    RunState = "dry_run_passed"
-	RunRunning         RunState = "running"
-	RunSucceeded       RunState = "succeeded"
-	RunFailed          RunState = "failed"
-	RunRolledBack      RunState = "rolled_back"
+	RunPendingApproval    RunState = "pending_approval"
+	RunPrepared           RunState = "prepared"
+	RunApproved           RunState = "approved"
+	RunExecutionRequested RunState = "execution_requested"
+	RunProposalOnly       RunState = "proposal_only"
+	RunDryRunPassed       RunState = "dry_run_passed"
+	RunRunning            RunState = "running"
+	RunVerifying          RunState = "verifying"
+	RunRollbackRequested  RunState = "rollback_requested"
+	RunSucceeded          RunState = "succeeded"
+	RunFailed             RunState = "failed"
+	RunRolledBack         RunState = "rolled_back"
 )
 
 type ResourceRef struct {
@@ -82,21 +89,44 @@ type Evidence struct {
 }
 
 type Finding struct {
-	ID                string        `json:"id"`
-	Source            string        `json:"source"`
-	Title             string        `json:"title"`
-	Severity          Severity      `json:"severity"`
-	Evidence          []Evidence    `json:"evidence"`
-	Resources         []ResourceRef `json:"resources"`
-	BlastRadius       string        `json:"blastRadius"`
-	Fixability        Fixability    `json:"fixability"`
-	Status            FindingStatus `json:"status"`
-	CorrelationGroup  string        `json:"correlationGroup"`
-	RiskScore         int           `json:"riskScore"`
-	RemediationState  string        `json:"remediationState"`
-	RecommendedAction string        `json:"recommendedAction"`
-	CreatedAt         time.Time     `json:"createdAt"`
-	UpdatedAt         time.Time     `json:"updatedAt"`
+	ID                string          `json:"id"`
+	Source            string          `json:"source"`
+	Title             string          `json:"title"`
+	Severity          Severity        `json:"severity"`
+	Evidence          []Evidence      `json:"evidence"`
+	Resources         []ResourceRef   `json:"resources"`
+	BlastRadius       string          `json:"blastRadius"`
+	Fixability        Fixability      `json:"fixability"`
+	Status            FindingStatus   `json:"status"`
+	CorrelationGroup  string          `json:"correlationGroup"`
+	CorrelationKeys   CorrelationKeys `json:"correlationKeys,omitempty"`
+	RiskScore         int             `json:"riskScore"`
+	RiskExplanation   RiskExplanation `json:"riskExplanation"`
+	RemediationState  string          `json:"remediationState"`
+	RecommendedAction string          `json:"recommendedAction"`
+	CreatedAt         time.Time       `json:"createdAt"`
+	UpdatedAt         time.Time       `json:"updatedAt"`
+}
+
+type CorrelationKeys struct {
+	Workload        string `json:"workload,omitempty"`
+	Namespace       string `json:"namespace,omitempty"`
+	Identity        string `json:"identity,omitempty"`
+	NetworkExposure string `json:"networkExposure,omitempty"`
+	Image           string `json:"image,omitempty"`
+}
+
+type RiskFactor struct {
+	Name   string `json:"name"`
+	Points int    `json:"points"`
+	Reason string `json:"reason"`
+}
+
+type RiskExplanation struct {
+	Version    string       `json:"version"`
+	BaseScore  int          `json:"baseScore"`
+	Factors    []RiskFactor `json:"factors"`
+	FinalScore int          `json:"finalScore"`
 }
 
 type Dashboard struct {
@@ -182,13 +212,49 @@ type ChaosExperiment struct {
 }
 
 type ChaosExperimentRun struct {
-	ID           string    `json:"id"`
-	ExperimentID string    `json:"experimentId"`
-	Status       string    `json:"status"`
-	Message      string    `json:"message"`
-	Manifest     string    `json:"manifest"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID                string            `json:"id"`
+	ExperimentID      string            `json:"experimentId"`
+	Status            string            `json:"status"`
+	Message           string            `json:"message"`
+	Manifest          string            `json:"manifest"`
+	Resource          ResourceRef       `json:"resource"`
+	TargetSelector    map[string]string `json:"targetSelector"`
+	TargetCount       int               `json:"targetCount"`
+	DurationSeconds   int64             `json:"durationSeconds"`
+	RequestedBy       string            `json:"requestedBy"`
+	ApprovedBy        string            `json:"approvedBy,omitempty"`
+	ApprovalReason    string            `json:"approvalReason,omitempty"`
+	AbortedBy         string            `json:"abortedBy,omitempty"`
+	FailureReason     string            `json:"failureReason,omitempty"`
+	RecoveryStatus    string            `json:"recoveryStatus,omitempty"`
+	RecoveryMessage   string            `json:"recoveryMessage,omitempty"`
+	AttemptCount      int               `json:"attemptCount"`
+	Version           int64             `json:"version"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+	ApprovalExpiresAt *time.Time        `json:"approvalExpiresAt,omitempty"`
+	InjectionDeadline *time.Time        `json:"injectionDeadline,omitempty"`
+	StartedAt         *time.Time        `json:"startedAt,omitempty"`
+	FinishedAt        *time.Time        `json:"finishedAt,omitempty"`
+	CleanupDeadline   *time.Time        `json:"cleanupDeadline,omitempty"`
+	RecoveryDeadline  *time.Time        `json:"recoveryDeadline,omitempty"`
 }
+
+const (
+	ChaosPreflightValidated = "preflight_validated"
+	ChaosPendingApproval    = "pending_approval"
+	ChaosApproved           = "approved"
+	ChaosExecutionRequested = "execution_requested"
+	ChaosRunning            = "running"
+	ChaosCleanupRequested   = "cleanup_requested"
+	ChaosAbortRequested     = "abort_requested"
+	ChaosVerifying          = "verifying_recovery"
+	ChaosSucceeded          = "succeeded"
+	ChaosFailed             = "failed"
+	ChaosRejected           = "rejected"
+	ChaosAborted            = "aborted"
+	ChaosExpired            = "expired"
+)
 
 type ClusterSnapshot struct {
 	Inventory   ClusterInventory    `json:"inventory"`
@@ -211,12 +277,14 @@ type DryRunResult struct {
 }
 
 type ApprovalPolicy struct {
-	Required   bool     `json:"required"`
-	Categories []string `json:"categories,omitempty"`
+	Required   bool           `json:"required"`
+	Decision   ApprovalStatus `json:"decision,omitempty"`
+	Categories []string       `json:"categories,omitempty"`
 }
 
 type RemediationPlan struct {
 	ID                string         `json:"id"`
+	CatalogVersion    string         `json:"catalogVersion"`
 	FindingID         string         `json:"findingId"`
 	RootCause         string         `json:"rootCause"`
 	Actions           []TypedAction  `json:"actions"`
@@ -248,11 +316,18 @@ type RemediationPreview struct {
 }
 
 type PlannedManifest struct {
-	ActionType string      `json:"actionType"`
-	Target     ResourceRef `json:"target"`
-	WriteMode  string      `json:"writeMode"`
-	Diff       string      `json:"diff"`
-	Manifest   string      `json:"manifest"`
+	ActionType          string      `json:"actionType"`
+	Target              ResourceRef `json:"target"`
+	WriteMode           string      `json:"writeMode"`
+	RiskTier            string      `json:"riskTier"`
+	ApprovalRequired    bool        `json:"approvalRequired"`
+	RequiredPermissions []string    `json:"requiredPermissions"`
+	VerificationChecks  []string    `json:"verificationChecks"`
+	RollbackProcedure   []string    `json:"rollbackProcedure"`
+	IdempotencyBehavior string      `json:"idempotencyBehavior"`
+	FailureHandling     string      `json:"failureHandling"`
+	Diff                string      `json:"diff"`
+	Manifest            string      `json:"manifest"`
 }
 
 type RemediationDiff struct {
@@ -272,8 +347,10 @@ type FindingGroup struct {
 }
 
 type FindingListResponse struct {
-	Items  []Finding      `json:"items"`
-	Groups []FindingGroup `json:"groups,omitempty"`
+	Items      []Finding      `json:"items"`
+	Groups     []FindingGroup `json:"groups,omitempty"`
+	Total      int            `json:"total"`
+	NextCursor string         `json:"nextCursor,omitempty"`
 }
 
 type ApprovalRequest struct {
@@ -307,13 +384,14 @@ type RemediationRun struct {
 }
 
 type EvidenceBundle struct {
-	Scope       string            `json:"scope"`
-	GeneratedAt time.Time         `json:"generatedAt"`
-	Summary     map[string]int    `json:"summary"`
-	Findings    []Finding         `json:"findings"`
-	Plans       []RemediationPlan `json:"plans"`
-	Runs        []RemediationRun  `json:"runs"`
-	AuditEvents []AuditEvent      `json:"auditEvents"`
+	Scope       string               `json:"scope"`
+	GeneratedAt time.Time            `json:"generatedAt"`
+	Summary     map[string]int       `json:"summary"`
+	Findings    []Finding            `json:"findings"`
+	Plans       []RemediationPlan    `json:"plans"`
+	Runs        []RemediationRun     `json:"runs"`
+	ChaosRuns   []ChaosExperimentRun `json:"chaosRuns"`
+	AuditEvents []AuditEvent         `json:"auditEvents"`
 }
 
 type Exception struct {
@@ -323,6 +401,9 @@ type Exception struct {
 	Reason        string    `json:"reason"`
 	ExpiresAt     time.Time `json:"expiresAt"`
 	AuditMetadata string    `json:"auditMetadata"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type AuditEvent struct {
@@ -365,13 +446,16 @@ type Integration struct {
 }
 
 type IntegrationHealth struct {
-	Name         string    `json:"name"`
-	Type         string    `json:"type"`
-	Enabled      bool      `json:"enabled"`
-	Status       string    `json:"status"`
-	Health       string    `json:"health"`
-	DataLastSeen string    `json:"dataLastSeen"`
-	Permissions  []string  `json:"permissions"`
-	SetupGaps    []string  `json:"setupGaps"`
-	CheckedAt    time.Time `json:"checkedAt"`
+	Name              string    `json:"name"`
+	Type              string    `json:"type"`
+	Enabled           bool      `json:"enabled"`
+	Status            string    `json:"status"`
+	Health            string    `json:"health"`
+	DataLastSeen      string    `json:"dataLastSeen"`
+	Permissions       []string  `json:"permissions"`
+	SupportedVersions []string  `json:"supportedVersions"`
+	SetupGaps         []string  `json:"setupGaps"`
+	ErrorState        string    `json:"errorState,omitempty"`
+	FindingsCount     int       `json:"findingsCount"`
+	CheckedAt         time.Time `json:"checkedAt"`
 }

@@ -26,6 +26,7 @@ const finding = {
 };
 
 async function mockApi(page: Page) {
+	await page.route("**/auth/config", async (route) => route.fulfill({ json: { mode: "development", issuerURL: "", clientID: "" } }));
   await page.route("**/api/dashboard", async (route) =>
     route.fulfill({
       json: {
@@ -108,6 +109,7 @@ async function mockApi(page: Page) {
     })
   );
   await page.route("**/api/findings", async (route) => route.fulfill({ json: { items: [finding] } }));
+  await page.route("**/api/exceptions", async (route) => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/audit-events", async (route) => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/integrations", async (route) =>
     route.fulfill({
@@ -168,6 +170,7 @@ async function mockApi(page: Page) {
       }
     })
   );
+  await page.route("**/api/experiment-runs", async (route) => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/remediation-plans", async (route) =>
     route.fulfill({
       status: 201,
@@ -228,8 +231,33 @@ test("mobile layout keeps navigation and text accessible", async ({ page }) => {
   await mockApi(page);
   await page.setViewportSize({ width: 390, height: 840 });
   await page.goto("/");
-  await expect(page.getByText("AI Kubernetes Defender")).toBeVisible();
+  await expect(page.getByText("Guardrail control plane")).toBeVisible();
   await page.getByRole("button", { name: /Integrations/ }).click();
   await expect(page.getByRole("heading", { name: "Integrations" })).toBeVisible();
   await expect(page.getByText("Trivy Operator")).toBeVisible();
+});
+
+test("OIDC Authorization Code with PKCE authenticates against the real API", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Sign in to KubeAthrix" })).toBeVisible();
+  await page.getByRole("button", { name: "Sign in with OIDC" }).click();
+
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByText("Cluster cockpit")).toBeVisible();
+  const authenticatedHealth = await page.evaluate(async () => {
+    const token = sessionStorage.getItem("kubeathrix.oidc.access_token");
+    const response = await fetch("/api/health", { headers: { Authorization: `Bearer ${token}` } });
+    return { status: response.status, payload: await response.json() };
+  });
+  expect(authenticatedHealth.status).toBe(200);
+  expect(authenticatedHealth.payload).toMatchObject({ status: "ok", oidcConfigured: true, clusterId: "e2e" });
+  expect(await page.evaluate(() => sessionStorage.getItem("kubeathrix.oidc.access_token")?.split(".").length)).toBe(3);
+  expect(await page.evaluate(() => localStorage.length)).toBe(0);
+
+  const signOut = page.getByRole("button", { name: "Sign out" });
+  await expect(signOut).toBeVisible();
+  await signOut.click();
+  await expect(page.getByRole("heading", { name: "Sign in to KubeAthrix" })).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem("kubeathrix.oidc.access_token"))).toBeNull();
 });

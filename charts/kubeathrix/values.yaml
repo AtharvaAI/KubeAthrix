@@ -7,14 +7,17 @@ image:
   api:
     repository: docker.io/prashantdey/kubeathrix
     tag: "api-0.2.0" # x-release-please-version
+    digest: ""
     pullPolicy: IfNotPresent
   console:
     repository: docker.io/prashantdey/kubeathrix
     tag: "console-0.2.0" # x-release-please-version
+    digest: ""
     pullPolicy: IfNotPresent
   operator:
     repository: docker.io/prashantdey/kubeathrix
     tag: "operator-0.2.0" # x-release-please-version
+    digest: ""
     pullPolicy: IfNotPresent
 
 service:
@@ -25,8 +28,46 @@ service:
     port: 80
 
 api:
+  clusterID: default
+  maxRequestBytes: 1048576
+  rateLimitPerMinute: 120
+  # Open or in-review findings become expired when their newest evidence is
+  # older than this duration. Fresh evidence reopens them automatically.
+  findingExpiry: 24h
   clusterInspector:
     enabled: true
+  adapters:
+    enabled: true
+  riskConfig:
+    criticalBase: 90
+    highBase: 72
+    mediumBase: 50
+    lowBase: 28
+    infoBase: 10
+    multiSourcePoints: 6
+    correlatedPointsCap: 6
+    networkPoints: 5
+    identityPoints: 5
+    imagePoints: 3
+    multiResourcePointsCap: 5
+    workloadWindowMinutes: 120
+    imageWindowMinutes: 1440
+    identityWindowMinutes: 60
+    networkWindowMinutes: 120
+
+telemetry:
+  tracing:
+    enabled: false
+    # Full OTLP/HTTP base URL, for example https://otel.example.com:4318.
+    endpoint: ""
+    insecure: false
+    sampleRatio: 0.1
+    exportTimeout: 5s
+    port: 4318
+    # Optional Secret value containing standard OTLP headers such as
+    # "Authorization=Bearer ...". It is never copied into chart values.
+    existingSecret: ""
+    headersKey: headers
 
 ingress:
   enabled: false
@@ -40,9 +81,11 @@ ingress:
   tls: []
 
 auth:
-  devAuthEnabled: true
+  # This bypass grants every request administrator access. Enable it only for
+  # an isolated local demo and never expose such an install to a network.
+  insecureDevelopmentMode: false
   oidc:
-    enabled: false
+    enabled: true
     issuerURL: ""
     clientID: ""
     existingSecret: ""
@@ -50,8 +93,10 @@ auth:
 
 postgres:
   external: false
-  image: postgres:16-alpine
-  storageClassName: gp2
+  image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+  # Empty uses the cluster's default StorageClass. External managed Postgres is
+  # recommended for production.
+  storageClassName: ""
   storageSize: 8Gi
   host: ""
   port: 5432
@@ -60,17 +105,11 @@ postgres:
   existingSecret: ""
   passwordKey: password
 
-modelProviders:
-  - name: primary
-    type: openai-compatible
-    model: gpt-5
-    apiKeySecretRef:
-      name: kubeathrix-llm
-      key: api-key
-    externalSecretRef: null
+modelProviders: []
 
 remediation:
-  mode: gated
+  mutationEnabled: false
+  mode: proposal-only
   requireApprovalFor:
     - network
     - iam
@@ -83,11 +122,11 @@ remediation:
 
 engines:
   trivyOperator:
-    enabled: true
+    enabled: false
   kyverno:
-    enabled: true
+    enabled: false
   kubescape:
-    enabled: true
+    enabled: false
   falco:
     enabled: false
   tetragon:
@@ -98,6 +137,9 @@ engines:
     enabled: false
 
 chaos:
+  # Execution also requires engines.chaosMesh.enabled, a reachable compatible
+  # Chaos Mesh API, durable Postgres, and at least one exact non-system namespace.
+  namespaceAllowlist: []
   execution:
     enabled: false
 
@@ -125,9 +167,34 @@ notifications:
     enabled: false
 
 resources:
-  api: {}
-  console: {}
-  operator: {}
+  api:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  console:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  operator:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  postgres:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
 
 nodeSelector: {}
 tolerations: []

@@ -1,3 +1,18 @@
+{{- if and (not .Values.auth.insecureDevelopmentMode) (not .Values.auth.oidc.enabled) -}}
+{{- fail "secure authentication is required: configure auth.oidc or explicitly enable auth.insecureDevelopmentMode for an isolated demo" -}}
+{{- end -}}
+{{- if and (not .Values.auth.insecureDevelopmentMode) .Values.auth.oidc.enabled (or (empty .Values.auth.oidc.issuerURL) (empty .Values.auth.oidc.clientID)) -}}
+{{- fail "auth.oidc.issuerURL and auth.oidc.clientID are required unless auth.insecureDevelopmentMode=true" -}}
+{{- end -}}
+{{- if and .Values.telemetry.tracing.enabled (empty .Values.telemetry.tracing.endpoint) -}}
+{{- fail "telemetry.tracing.endpoint is required when OpenTelemetry tracing is enabled" -}}
+{{- end -}}
+{{- if and .Values.chaos.execution.enabled (empty .Values.chaos.namespaceAllowlist) -}}
+{{- fail "chaos.namespaceAllowlist must contain at least one non-system namespace when chaos execution is enabled" -}}
+{{- end -}}
+{{- if and .Values.chaos.execution.enabled (not .Values.engines.chaosMesh.enabled) -}}
+{{- fail "engines.chaosMesh.enabled must be true when chaos execution is enabled; install a compatible Chaos Mesh control plane first" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,10 +32,22 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: {{ include "kubeathrix.fullname" . }}-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
-          image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
+          image: {{ if .Values.image.api.digest }}"{{ .Values.image.api.repository }}@{{ .Values.image.api.digest }}"{{ else }}"{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"{{ end }}
           imagePullPolicy: {{ .Values.image.api.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 8080
@@ -32,12 +59,43 @@ spec:
                   key: {{ .Values.postgres.passwordKey }}
             - name: DATABASE_URL
               value: {{ include "kubeathrix.databaseURL" . | quote }}
-            - name: KUBEATHRIX_DEV_AUTH
-              value: {{ .Values.auth.devAuthEnabled | quote }}
+            - name: KUBEATHRIX_INSECURE_DEV_AUTH
+              value: {{ .Values.auth.insecureDevelopmentMode | quote }}
+            - name: KUBEATHRIX_CLUSTER_ID
+              value: {{ .Values.api.clusterID | quote }}
+            - name: KUBEATHRIX_MAX_REQUEST_BYTES
+              value: {{ .Values.api.maxRequestBytes | quote }}
+            - name: KUBEATHRIX_RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.api.rateLimitPerMinute | quote }}
+            - name: KUBEATHRIX_FINDING_EXPIRY
+              value: {{ .Values.api.findingExpiry | quote }}
+            - name: KUBEATHRIX_OTEL_TRACING_ENABLED
+              value: {{ .Values.telemetry.tracing.enabled | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.tracing.endpoint | quote }}
+            - name: KUBEATHRIX_OTEL_INSECURE
+              value: {{ .Values.telemetry.tracing.insecure | quote }}
+            - name: KUBEATHRIX_OTEL_SAMPLE_RATIO
+              value: {{ .Values.telemetry.tracing.sampleRatio | quote }}
+            - name: KUBEATHRIX_OTEL_EXPORT_TIMEOUT
+              value: {{ .Values.telemetry.tracing.exportTimeout | quote }}
+            {{- if .Values.telemetry.tracing.existingSecret }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.telemetry.tracing.existingSecret | quote }}
+                  key: {{ .Values.telemetry.tracing.headersKey | quote }}
+            {{- end }}
+            - name: KUBEATHRIX_RISK_CONFIG_JSON
+              value: {{ toJson .Values.api.riskConfig | quote }}
             - name: KUBEATHRIX_CLUSTER_INSPECTOR
               value: {{ .Values.api.clusterInspector.enabled | quote }}
+            - name: KUBEATHRIX_ADAPTERS_ENABLED
+              value: {{ .Values.api.adapters.enabled | quote }}
             - name: KUBEATHRIX_CHAOS_EXECUTION
               value: {{ .Values.chaos.execution.enabled | quote }}
+            - name: KUBEATHRIX_CHAOS_NAMESPACE_ALLOWLIST
+              value: {{ join "," .Values.chaos.namespaceAllowlist | quote }}
             - name: KUBEATHRIX_ENGINE_TRIVY_OPERATOR
               value: {{ .Values.engines.trivyOperator.enabled | quote }}
             - name: KUBEATHRIX_ENGINE_KYVERNO
@@ -56,13 +114,20 @@ spec:
               value: {{ .Values.auth.oidc.issuerURL | quote }}
             - name: OIDC_CLIENT_ID
               value: {{ .Values.auth.oidc.clientID | quote }}
+            {{- if .Values.auth.oidc.existingSecret }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.oidc.existingSecret }}
+                  key: {{ .Values.auth.oidc.clientSecretKey }}
+            {{- end }}
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /health/ready
               port: http
           livenessProbe:
             httpGet:
-              path: /api/health
+              path: /health/live
               port: http
           resources:
             {{- toYaml .Values.resources.api | nindent 12 }}

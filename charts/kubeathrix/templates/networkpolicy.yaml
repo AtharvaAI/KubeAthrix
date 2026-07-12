@@ -1,34 +1,141 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "kubeathrix.fullname" . }}-default
+  name: {{ include "kubeathrix.fullname" . }}-default-deny
   labels:
     {{- include "kubeathrix.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
       {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
-  policyTypes:
-    - Ingress
-    - Egress
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-console
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: console
+  policyTypes: [Ingress, Egress]
   ingress:
-    - from:
-        - namespaceSelector: {}
-      ports:
-        - protocol: TCP
-          port: 80
+    - ports:
         - protocol: TCP
           port: 8080
-        - protocol: TCP
-          port: 8081
   egress:
     - to:
-        - namespaceSelector: {}
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
+        - podSelector:
+            matchLabels:
+              {{- include "kubeathrix.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
       ports:
         - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 5432
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-api
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeathrix.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: console
+      ports:
+        - {protocol: TCP, port: 8080}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - ports:
+        - {protocol: TCP, port: 443}
+    {{- if and .Values.telemetry.tracing.enabled (ne (int .Values.telemetry.tracing.port) 443) }}
+    - ports:
+        - {protocol: TCP, port: {{ .Values.telemetry.tracing.port }} }
+    {{- end }}
+    {{- if not .Values.postgres.external }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeathrix.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - {protocol: TCP, port: 5432}
+    {{- else }}
+    - ports:
+        - {protocol: TCP, port: {{ .Values.postgres.port }}}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-operator
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: operator
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - ports:
+        - {protocol: TCP, port: 443}
+{{- if not .Values.postgres.external }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeathrix.fullname" . }}-postgres
+  labels:
+    {{- include "kubeathrix.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeathrix.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports:
+        - {protocol: TCP, port: 5432}
+{{- end }}

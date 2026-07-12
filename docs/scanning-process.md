@@ -1,12 +1,12 @@
 # Cluster Scanning Process
 
-KubeAthrix now runs a production-oriented read-only posture scan from the API service account. The scanner does not read Secret payloads and does not execute shell or `kubectl`; it compares Kubernetes object specs, status, labels, and RBAC rules against built-in controls.
+KubeAthrix now runs a production-oriented read-only posture scan from the API service account. The scanner does not request Secret objects and does not execute shell or `kubectl`; it compares other Kubernetes object specs, status, labels, and RBAC rules against built-in controls.
 
 ## Phase Comparison
 
 | Area | Initial scanner | Current scanner |
 | --- | --- | --- |
-| Inventory | Counted core resources for the dashboard | Counts nodes, pods, namespaces, workloads, services, ingresses, jobs, config maps, Secret metadata, RBAC, NetworkPolicies, quotas, limits, PVCs, PDBs, HPAs, and events |
+| Inventory | Counted core resources for the dashboard | Counts nodes, pods, namespaces, workloads, services, ingresses, jobs, config maps, RBAC, NetworkPolicies, quotas, limits, PVCs, PDBs, HPAs, and events without requesting Secret objects |
 | Namespace policy | Missing quotas, limits, NetworkPolicies | Adds Pod Security admission labels and privileged namespace detection |
 | Workloads | Missing resources, readiness, PDBs, privileged pods | Adds liveness, mutable images, host access, default ServiceAccounts, token automount, seccomp, runAsNonRoot, dropped capabilities, elevated capabilities |
 | Network | LoadBalancer and NodePort services | Adds externalIPs, Ingress TLS gaps, wildcard hosts, broad NetworkPolicy ingress/egress |

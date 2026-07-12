@@ -11,6 +11,7 @@ import {
   Gauge,
   GitPullRequest,
   KeyRound,
+  LogOut,
   LockKeyhole,
   Network,
   PlayCircle,
@@ -24,22 +25,37 @@ import {
   Wrench
 } from "lucide-react";
 import {
+  abortChaosRun,
+  approveChaosRun,
   approveRemediationPlan,
+  createFindingException,
+  deleteFindingException,
   createRemediationPlan,
+  executeChaosRun,
   executeRemediationPlan,
   loadEvidenceBundle,
   loadAuditEvents,
+  loadChaosRuns,
+  loadChaosRun,
   loadDashboard,
   loadExperiments,
   loadFindings,
+  loadFindingExceptions,
   loadIntegrationHealth,
   loadIntegrations,
   loadModelProviders,
+  loadRemediationRun,
   loadRemediationPlanDiff,
+  rejectChaosRun,
   rejectRemediationPlan,
-  startChaosExperiment
+  rollbackRemediationRun,
+  startChaosExperiment,
+	updateFindingStatus,
+  APIError
 } from "./api";
-import type { AuditEvent, ChaosExperiment, ChaosExperimentRun, ClusterInventory, Dashboard, EvidenceBundle, Finding, Integration, IntegrationHealth, ModelProviderSettings, RemediationDiff, RemediationPlan, ScanSummary, Severity } from "./types";
+import { beginLogin, clearAuthentication, initializeAuth } from "./auth";
+import type { AuthState } from "./auth";
+import type { AuditEvent, ChaosExperiment, ChaosExperimentRun, ClusterInventory, Dashboard, EvidenceBundle, Finding, FindingException, Integration, IntegrationHealth, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationRun, ScanSummary, Severity } from "./types";
 
 type View = "dashboard" | "findings" | "fix-center" | "runtime" | "policy" | "experiments" | "audit" | "integrations" | "settings";
 
@@ -98,46 +114,87 @@ const emptyScan: ScanSummary = {
 };
 
 function App() {
+	const [authState, setAuthState] = useState<AuthState | null>(null);
   const [activeView, setActiveView] = useState<View>("dashboard");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [exceptions, setExceptions] = useState<FindingException[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState("");
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [integrationHealth, setIntegrationHealth] = useState<Record<string, IntegrationHealth>>({});
   const [experiments, setExperiments] = useState<ChaosExperiment[]>([]);
   const [experimentRun, setExperimentRun] = useState<ChaosExperimentRun | null>(null);
+  const [experimentMessage, setExperimentMessage] = useState("");
   const [modelProviders, setModelProviders] = useState<ModelProviderSettings | null>(null);
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [plan, setPlan] = useState<RemediationPlan | null>(null);
   const [planDiff, setPlanDiff] = useState<RemediationDiff | null>(null);
+  const [remediationRun, setRemediationRun] = useState<RemediationRun | null>(null);
   const [evidenceBundle, setEvidenceBundle] = useState<EvidenceBundle | null>(null);
   const [workflowMessage, setWorkflowMessage] = useState("No remediation has been submitted in this console session.");
+	const [findingMessage, setFindingMessage] = useState("");
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    void refreshData();
+	void initializeAuth().then((state) => {
+	  setAuthState(state);
+	  if (state.status === "authenticated") void refreshData();
+	});
   }, []);
 
+  useEffect(() => {
+    if (!remediationRun || !["execution_requested", "running", "verifying", "dry_run_passed", "rollback_requested"].includes(remediationRun.state)) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadRemediationRun(remediationRun.id).then((run) => {
+        setRemediationRun(run);
+        setWorkflowMessage(`${run.id}: ${humanize(run.state)} — ${run.validationResult}`);
+      }).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [remediationRun?.id, remediationRun?.state]);
+
+  useEffect(() => {
+    if (!experimentRun || !["pending_approval", "approved", "execution_requested", "running", "cleanup_requested", "abort_requested", "verifying_recovery"].includes(experimentRun.status)) return;
+    const timer = window.setInterval(() => {
+      void loadChaosRun(experimentRun.id).then((run) => {
+        setExperimentRun(run);
+        setExperimentMessage(run.message);
+      }).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [experimentRun?.id, experimentRun?.status]);
+
   async function refreshData() {
+    setLoading(true);
     try {
-      const [dashboardData, findingData, auditData, integrationData, providerData, experimentData] = await Promise.all([
+      const [dashboardData, findingData, exceptionData, auditData, integrationData, experimentData, chaosRuns] = await Promise.all([
         loadDashboard(),
         loadFindings(),
+        loadFindingExceptions(),
         loadAuditEvents(),
         loadIntegrations(),
-        loadModelProviders(),
-        loadExperiments()
+        loadExperiments(),
+        loadChaosRuns()
       ]);
+      const providerData = await loadModelProviders().catch((error: unknown) => {
+        if (error instanceof APIError && error.status === 403) return null;
+        throw error;
+      });
       setDashboard(dashboardData);
       setFindings(findingData);
+      setExceptions(exceptionData);
       setAuditEvents(auditData);
       setIntegrations(integrationData);
       void refreshIntegrationHealth(integrationData);
       setModelProviders(providerData);
       setExperiments(dashboardData.experiments?.length ? dashboardData.experiments : experimentData);
+      setExperimentRun(chaosRuns[0] ?? null);
       setLoadError(null);
       if (findingData.length > 0 && !findingData.some((finding) => finding.id === selectedFindingId)) {
         setSelectedFindingId(findingData[0].id);
@@ -147,6 +204,8 @@ function App() {
       }
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "API unavailable");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -185,16 +244,49 @@ function App() {
       const nextDiff = await loadRemediationPlanDiff(nextPlan.id);
       setPlan(nextPlan);
       setPlanDiff(nextDiff);
+      setRemediationRun(null);
       setEvidenceBundle(null);
       setWorkflowMessage(
         nextPlan.approvalPolicy.required
           ? "Plan created and waiting for explicit approval."
-          : "Plan created as deterministic; controller validation is next."
+          : "Plan created as deterministic; it is eligible for an explicit execution request."
       );
       setLoadError(null);
       setActiveView("fix-center");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : "Unable to create remediation plan.");
+    }
+  }
+
+	async function handleFindingStatus(findingId: string, status: "open" | "in_review", reason: string) {
+		try {
+			const updated = await updateFindingStatus(findingId, status, reason);
+			setFindings((items) => items.map((item) => item.id === updated.id ? updated : item));
+			setFindingMessage(`Finding moved to ${humanize(status)}. The authenticated actor and reason were audited.`);
+			setAuditEvents(await loadAuditEvents());
+		} catch (error) { setFindingMessage(error instanceof Error ? error.message : "Unable to update finding status."); }
+	}
+
+	async function handleSuppressFinding(findingId: string, reason: string, expiresAt: string) {
+		try {
+			const created = await createFindingException(findingId, reason, expiresAt);
+			setFindings(await loadFindings());
+			setExceptions((items) => [created, ...items]);
+			setAuditEvents(await loadAuditEvents());
+			setFindingMessage("Time-bounded exception created; owner identity and expiration were audited.");
+		} catch (error) { setFindingMessage(error instanceof Error ? error.message : "Unable to create exception."); }
+	}
+
+  async function handleDeleteException(id: string) {
+    try {
+      await deleteFindingException(id);
+      const [findingData, exceptionData, auditData] = await Promise.all([loadFindings(), loadFindingExceptions(), loadAuditEvents()]);
+      setFindings(findingData);
+      setExceptions(exceptionData);
+      setAuditEvents(auditData);
+      setFindingMessage("Exception removed; matching findings were reopened when no other active exception applied.");
+    } catch (error) {
+      setFindingMessage(error instanceof Error ? error.message : "Unable to remove exception.");
     }
   }
 
@@ -205,6 +297,7 @@ function App() {
     setApprovalBusy(true);
     try {
       const run = await executeRemediationPlan(plan.id);
+      setRemediationRun(run);
       setWorkflowMessage(`${run.id} is ${humanize(run.state)}; operator reconciliation has the typed action queue.`);
       const [dashboardData, findingData, auditData] = await Promise.all([loadDashboard(), loadFindings(), loadAuditEvents()]);
       setDashboard(dashboardData);
@@ -214,6 +307,22 @@ function App() {
       setLoadError(null);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : "Unable to request execution.");
+    } finally {
+      setApprovalBusy(false);
+    }
+  }
+
+  async function handleRollback() {
+    if (!remediationRun) {
+      return;
+    }
+    setApprovalBusy(true);
+    try {
+      const run = await rollbackRemediationRun(remediationRun.id);
+      setRemediationRun(run);
+      setWorkflowMessage(`${run.id}: rollback requested from the controller-owned pre-change snapshot.`);
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : "Unable to request rollback.");
     } finally {
       setApprovalBusy(false);
     }
@@ -232,25 +341,45 @@ function App() {
     }
   }
 
-  async function handleApproval(decision: "approved" | "rejected") {
+  function handleExportEvidenceBundle() {
+    if (!evidenceBundle) return;
+    const blob = new Blob([JSON.stringify(evidenceBundle, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `kubeathrix-evidence-${safeFilename(evidenceBundle.scope)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleLogout() {
+    if (authState?.status !== "authenticated" || authState.config.mode === "development") return;
+    clearAuthentication();
+    setAuthState({ status: "login_required", config: authState.config });
+    setDashboard(null);
+    setFindings([]);
+    setExceptions([]);
+  }
+
+	async function handleApproval(decision: "approved" | "rejected", reason: string) {
     if (!plan) {
       return;
     }
     setApprovalBusy(true);
     try {
-      const approval = decision === "approved" ? await approveRemediationPlan(plan.id) : await rejectRemediationPlan(plan.id);
-      const nextStatus = approval.status === "approved" ? "dry_run_verified" : "rejected";
+	  const approval = decision === "approved" ? await approveRemediationPlan(plan.id, reason) : await rejectRemediationPlan(plan.id, reason);
+      const nextStatus = approval.status === "approved" ? "approved" : "rejected";
       setPlan((current) =>
         current
           ? {
               ...current,
               status: nextStatus,
-              approvalPolicy: { ...current.approvalPolicy, required: false },
+              approvalPolicy: { ...current.approvalPolicy, decision: approval.status },
               dryRunResult: {
-                passed: approval.status === "approved",
+                passed: false,
                 message:
                   approval.status === "approved"
-                    ? "Approval recorded; typed remediation dry-run verified and queued behind controller safety gates."
+                    ? "Approval recorded; no server-side dry-run or cluster write has occurred yet."
                     : "Approval rejected; no cluster change will be attempted."
               }
             }
@@ -258,7 +387,7 @@ function App() {
       );
       setWorkflowMessage(
         decision === "approved"
-          ? `Approved ${plan.id}; typed dry-run is verified and the controller gate has the next action.`
+          ? `Approved ${plan.id}; execution remains a separate operator action and dry-run is still pending.`
           : `Rejected ${plan.id}; no cluster change will be attempted.`
       );
       const [dashboardData, findingData, auditData] = await Promise.all([loadDashboard(), loadFindings(), loadAuditEvents()]);
@@ -277,20 +406,42 @@ function App() {
     try {
       const run = await startChaosExperiment(experimentId, manifest);
       setExperimentRun(run);
+      setExperimentMessage(run.message);
       const auditData = await loadAuditEvents();
       setAuditEvents(auditData);
       setLoadError(null);
     } catch (error) {
-      setExperimentRun({
-        id: "",
-        experimentId,
-        status: "blocked",
-        message: error instanceof Error ? error.message : "Unable to start experiment.",
-        manifest,
-        createdAt: new Date().toISOString()
-      });
+      setExperimentMessage(error instanceof Error ? error.message : "Unable to start experiment.");
     }
   }
+
+  async function handleChaosDecision(action: "approve" | "reject" | "execute" | "abort", reason: string) {
+    if (!experimentRun) return;
+    try {
+      const run = action === "approve"
+        ? await approveChaosRun(experimentRun.id, reason)
+        : action === "reject"
+          ? await rejectChaosRun(experimentRun.id, reason)
+          : action === "execute"
+            ? await executeChaosRun(experimentRun.id)
+            : await abortChaosRun(experimentRun.id, reason);
+      setExperimentRun(run);
+      setExperimentMessage(run.message);
+      setAuditEvents(await loadAuditEvents());
+    } catch (error) {
+      setExperimentMessage(error instanceof Error ? error.message : `Unable to ${action} chaos run.`);
+    }
+  }
+
+	if (authState === null) {
+		return <main className="auth-gate"><ShieldCheck size={32} aria-hidden="true" /><h1>KubeAthrix</h1><p>Loading authentication configuration…</p></main>;
+	}
+	if (authState.status === "error") {
+		return <main className="auth-gate"><AlertTriangle size={32} aria-hidden="true" /><h1>Authentication unavailable</h1><p>{authState.message}</p></main>;
+	}
+	if (authState.status === "login_required") {
+		return <main className="auth-gate"><ShieldCheck size={32} aria-hidden="true" /><h1>Sign in to KubeAthrix</h1><p>Use your configured OpenID Connect provider. Authorization Code with PKCE keeps client secrets out of the browser.</p><button className="primary-button" type="button" onClick={() => void beginLogin(authState.config)}>Sign in with OIDC</button></main>;
+	}
 
   return (
     <div className="app-shell">
@@ -301,7 +452,7 @@ function App() {
           </div>
           <div>
             <strong>KubeAthrix</strong>
-            <span>AI Kubernetes Defender</span>
+            <span>Guardrail control plane</span>
           </div>
         </div>
         <nav className="nav-list">
@@ -321,8 +472,8 @@ function App() {
           })}
         </nav>
         <div className="guardrail-note">
-          <Bot size={18} aria-hidden="true" />
-          <span>Models propose structured plans. Controllers execute typed actions only.</span>
+		  <ShieldCheck size={18} aria-hidden="true" />
+		  <span>Deterministic by default. Controllers execute only versioned typed actions.</span>
         </div>
       </aside>
 
@@ -340,17 +491,24 @@ function App() {
             <button className="icon-button" type="button" title="Refresh data" aria-label="Refresh data" onClick={() => void refreshData()}>
               <RotateCcw size={18} aria-hidden="true" />
             </button>
+            {authState.config.mode === "oidc" && (
+              <button className="secondary-button" type="button" onClick={handleLogout}>
+                <LogOut size={18} aria-hidden="true" />
+                Sign out
+              </button>
+            )}
           </div>
         </header>
 
         {loadError && <ErrorPanel message={loadError} onRetry={() => void refreshData()} />}
-        {!loadError && activeView === "dashboard" && dashboard && (
+        {!loadError && loading && <LoadingPanel />}
+        {!loadError && !loading && activeView === "dashboard" && dashboard && (
           <DashboardView dashboard={dashboard} findings={findings} onOpenFinding={(id) => {
             setSelectedFindingId(id);
             setActiveView("findings");
           }} />
         )}
-        {!loadError && activeView === "findings" && (
+        {!loadError && !loading && activeView === "findings" && (
           <FindingsView
             findings={filteredFindings}
             selectedFinding={selectedFinding}
@@ -360,19 +518,38 @@ function App() {
             onSeverityChange={setSeverityFilter}
             onSelect={setSelectedFindingId}
             onCreatePlan={handleCreatePlan}
+			onStatus={handleFindingStatus}
+			onSuppress={handleSuppressFinding}
+			onDeleteException={handleDeleteException}
+			exceptions={exceptions}
+			message={findingMessage}
           />
         )}
-        {!loadError && activeView === "fix-center" && (
-          <FixCenterView plan={plan} diff={planDiff} evidenceBundle={evidenceBundle} finding={selectedFinding} workflowMessage={workflowMessage} approvalBusy={approvalBusy} onCreatePlan={handleCreatePlan} onApproval={handleApproval} onExecute={handleExecutePlan} onEvidenceBundle={handleLoadEvidenceBundle} />
+        {!loadError && !loading && activeView === "fix-center" && (
+          <FixCenterView plan={plan} run={remediationRun} diff={planDiff} evidenceBundle={evidenceBundle} finding={selectedFinding} workflowMessage={workflowMessage} approvalBusy={approvalBusy} onCreatePlan={handleCreatePlan} onApproval={handleApproval} onExecute={handleExecutePlan} onRollback={handleRollback} onEvidenceBundle={handleLoadEvidenceBundle} onExportEvidenceBundle={handleExportEvidenceBundle} />
         )}
-        {!loadError && activeView === "runtime" && <RuntimeView findings={findings.filter((finding) => finding.source === "falco" || finding.source === "tetragon")} />}
-        {!loadError && activeView === "policy" && dashboard && <PolicyView findings={findings} dashboard={dashboard} />}
-        {!loadError && activeView === "experiments" && <ExperimentsView experiments={experiments} run={experimentRun} onStart={handleStartExperiment} />}
-        {!loadError && activeView === "audit" && <AuditView events={auditEvents} />}
-        {!loadError && activeView === "integrations" && <IntegrationsView integrations={integrations} health={integrationHealth} />}
-        {!loadError && activeView === "settings" && <SettingsView providers={modelProviders} />}
+        {!loadError && !loading && activeView === "runtime" && <RuntimeView findings={findings.filter((finding) => finding.source === "falco" || finding.source === "tetragon")} />}
+        {!loadError && !loading && activeView === "policy" && dashboard && <PolicyView findings={findings} dashboard={dashboard} />}
+        {!loadError && !loading && activeView === "experiments" && <ExperimentsView experiments={experiments} run={experimentRun} message={experimentMessage} onStart={handleStartExperiment} onDecision={handleChaosDecision} />}
+        {!loadError && !loading && activeView === "audit" && <AuditView events={auditEvents} />}
+        {!loadError && !loading && activeView === "integrations" && <IntegrationsView integrations={integrations} health={integrationHealth} />}
+        {!loadError && !loading && activeView === "settings" && <SettingsView providers={modelProviders} />}
       </main>
     </div>
+  );
+}
+
+function LoadingPanel() {
+  return (
+    <section className="view-grid" aria-live="polite" aria-busy="true">
+      <div className="panel wide-panel">
+        <div className="panel-heading">
+          <div><p className="eyebrow">Live control plane</p><h2>Loading authorized cluster data</h2></div>
+          <Activity size={20} aria-hidden="true" />
+        </div>
+        <p className="summary-text">Reading findings, evidence freshness, workflow state, integrations, and audit history.</p>
+      </div>
+    </section>
   );
 }
 
@@ -465,7 +642,7 @@ function DashboardView({ dashboard, findings, onOpenFinding }: { dashboard: Dash
       <div className="panel wide-panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">RBAC and sensitive metadata</p>
+            <p className="eyebrow">RBAC and operational metadata</p>
             <h2>Access surface</h2>
           </div>
           <LockKeyhole size={20} aria-hidden="true" />
@@ -476,7 +653,6 @@ function DashboardView({ dashboard, findings, onOpenFinding }: { dashboard: Dash
           <Fact label="RoleBindings" value={cluster.roleBindings ?? 0} />
           <Fact label="ClusterRoles" value={cluster.clusterRoles ?? 0} />
           <Fact label="ClusterRoleBindings" value={cluster.clusterRoleBindings ?? 0} />
-          <Fact label="Secrets metadata" value={cluster.secrets ?? 0} />
           <Fact label="ConfigMaps" value={cluster.configMaps ?? 0} />
           <Fact label="Recent events" value={cluster.events ?? 0} />
         </div>
@@ -568,12 +744,17 @@ function DashboardView({ dashboard, findings, onOpenFinding }: { dashboard: Dash
 function FindingsView(props: {
   findings: Finding[];
   selectedFinding?: Finding;
+  exceptions: FindingException[];
   query: string;
   severityFilter: string;
   onQueryChange: (value: string) => void;
   onSeverityChange: (value: string) => void;
   onSelect: (id: string) => void;
   onCreatePlan: (id: string) => void;
+	onStatus: (id: string, status: "open" | "in_review", reason: string) => void | Promise<void>;
+	onSuppress: (id: string, reason: string, expiresAt: string) => void | Promise<void>;
+	onDeleteException: (id: string) => void | Promise<void>;
+	message: string;
 }) {
   return (
     <section className="split-view">
@@ -608,13 +789,15 @@ function FindingsView(props: {
       </div>
 
       {props.selectedFinding && (
-        <FindingDetail finding={props.selectedFinding} onCreatePlan={() => props.onCreatePlan(props.selectedFinding!.id)} />
+		<FindingDetail finding={props.selectedFinding} exceptions={props.exceptions.filter((item) => item.scope === props.selectedFinding!.id || item.scope === props.selectedFinding!.correlationGroup || item.scope === `source:${props.selectedFinding!.source}`)} message={props.message} onStatus={props.onStatus} onSuppress={props.onSuppress} onDeleteException={props.onDeleteException} onCreatePlan={() => props.onCreatePlan(props.selectedFinding!.id)} />
       )}
     </section>
   );
 }
 
-function FindingDetail({ finding, onCreatePlan }: { finding: Finding; onCreatePlan: () => void }) {
+function FindingDetail({ finding, exceptions, message, onCreatePlan, onStatus, onSuppress, onDeleteException }: { finding: Finding; exceptions: FindingException[]; message: string; onCreatePlan: () => void; onStatus: (id: string, status: "open" | "in_review", reason: string) => void | Promise<void>; onSuppress: (id: string, reason: string, expiresAt: string) => void | Promise<void>; onDeleteException: (id: string) => void | Promise<void> }) {
+	const [reason, setReason] = useState("");
+	const [expiresAt, setExpiresAt] = useState(() => new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16));
   return (
     <article className="panel detail-panel">
       <div className="panel-heading">
@@ -641,6 +824,9 @@ function FindingDetail({ finding, onCreatePlan }: { finding: Finding; onCreatePl
           </div>
         ))}
       </div>
+	  {finding.riskExplanation && (
+		<><h3>Why this risk score</h3><div className="timeline"><div className="timeline-item"><strong>Model {finding.riskExplanation.version}: base {finding.riskExplanation.baseScore}, final {finding.riskExplanation.finalScore}</strong>{finding.riskExplanation.factors.map((factor) => <span key={factor.name}>+{factor.points} {factor.reason}</span>)}</div></div></>
+	  )}
       <h3>Affected resources</h3>
       <div className="resource-list">
         {finding.resources.map((resource) => (
@@ -650,6 +836,22 @@ function FindingDetail({ finding, onCreatePlan }: { finding: Finding; onCreatePl
           </code>
         ))}
       </div>
+	  <h3>Lifecycle and exception</h3>
+	  <label><span>Audit reason</span><input value={reason} maxLength={2048} onChange={(event) => setReason(event.target.value)} placeholder="Required for lifecycle changes" /></label>
+	  <label><span>Exception expires</span><input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></label>
+	  <div className="button-row">
+		<button className="secondary-button" disabled={!reason.trim()} type="button" onClick={() => void onStatus(finding.id, finding.status === "in_review" ? "open" : "in_review", reason.trim())}>{finding.status === "in_review" ? "Reopen" : "Mark in review"}</button>
+		<button className="secondary-button" disabled={!reason.trim() || !expiresAt || finding.status === "suppressed"} type="button" onClick={() => void onSuppress(finding.id, reason.trim(), new Date(expiresAt).toISOString())}>Create exception</button>
+	  </div>
+	  {exceptions.length > 0 && <div className="timeline" aria-label="Matching exceptions">
+		{exceptions.map((item) => <div className="timeline-item" key={item.id}>
+		  <strong>{humanize(item.status)} until {new Date(item.expiresAt).toLocaleString()}</strong>
+		  <span>{item.reason}</span>
+		  <small>{item.owner} · {item.id}</small>
+		  <button className="secondary-button" type="button" onClick={() => void onDeleteException(item.id)}>Remove exception</button>
+		</div>)}
+	  </div>}
+	  {message && <p className="summary-text">{message}</p>}
       <button className="primary-button" type="button" onClick={onCreatePlan}>
         <Sparkles size={18} aria-hidden="true" />
         Generate typed plan
@@ -660,6 +862,7 @@ function FindingDetail({ finding, onCreatePlan }: { finding: Finding; onCreatePl
 
 function FixCenterView({
   plan,
+  run,
   diff,
   evidenceBundle,
   finding,
@@ -668,22 +871,28 @@ function FixCenterView({
   onCreatePlan,
   onApproval,
   onExecute,
-  onEvidenceBundle
+  onRollback,
+  onEvidenceBundle,
+  onExportEvidenceBundle
 }: {
   plan: RemediationPlan | null;
+  run: RemediationRun | null;
   diff: RemediationDiff | null;
   evidenceBundle: EvidenceBundle | null;
   finding?: Finding;
   workflowMessage: string;
   approvalBusy: boolean;
   onCreatePlan: (id: string) => void;
-  onApproval: (decision: "approved" | "rejected") => void | Promise<void>;
+	onApproval: (decision: "approved" | "rejected", reason: string) => void | Promise<void>;
   onExecute: () => void | Promise<void>;
+  onRollback: () => void | Promise<void>;
   onEvidenceBundle: () => void | Promise<void>;
+  onExportEvidenceBundle: () => void;
 }) {
   const planBadge = plan ? remediationBadge(plan) : null;
-  const decisionLocked = plan?.status === "dry_run_verified" || plan?.status === "rejected";
-  const executeLocked = !plan || plan.approvalPolicy.required || plan.status === "rejected" || plan.status === "execution_requested";
+	const [decisionReason, setDecisionReason] = useState("");
+  const decisionLocked = plan?.approvalPolicy.decision === "approved" || plan?.approvalPolicy.decision === "rejected";
+  const executeLocked = !plan || (plan.approvalPolicy.required && plan.approvalPolicy.decision !== "approved") || plan.status === "rejected" || plan.status === "execution_requested";
   return (
     <section className="view-grid fix-grid">
       <div className="panel wide-panel">
@@ -694,7 +903,7 @@ function FixCenterView({
           </div>
         </div>
         <div className="control-loop">
-          {["Normalize", "Plan", "Dry-run", "Approve", "Verify"].map((step, index) => (
+          {["Normalize", "Plan", "Approve", "Execute", "Dry-run", "Verify"].map((step, index) => (
             <div className="loop-step" key={step}>
               <span>{index + 1}</span>
               <strong>{step}</strong>
@@ -733,8 +942,9 @@ function FixCenterView({
           <p className="summary-text">{plan.rootCause}</p>
           <div className="fact-grid dense">
             <Fact label="Dry-run" value={plan.dryRunResult.passed ? "passed" : "pending"} />
+            <Fact label="Catalog" value={plan.catalogVersion || "unknown"} />
             <Fact label="Plan status" value={humanize(plan.status)} />
-            <Fact label="Approval gate" value={plan.approvalPolicy.required ? "required" : "cleared"} />
+            <Fact label="Approval gate" value={!plan.approvalPolicy.required ? "not required" : plan.approvalPolicy.decision ?? "pending"} />
             <Fact label="Actions" value={plan.actions.length} />
           </div>
           <div className="action-list">
@@ -769,11 +979,12 @@ function FixCenterView({
             </div>
           </div>
           <div className="button-row">
-            <button className="primary-button" type="button" disabled={approvalBusy || decisionLocked} onClick={() => void onApproval("approved")}>
+			<label><span>Approval decision reason</span><input value={decisionReason} maxLength={2048} onChange={(event) => setDecisionReason(event.target.value)} /></label>
+			<button className="primary-button" type="button" disabled={approvalBusy || decisionLocked || !decisionReason.trim()} onClick={() => void onApproval("approved", decisionReason.trim())}>
               <PlayCircle size={18} aria-hidden="true" />
               {approvalBusy ? "Working" : "Approve"}
             </button>
-            <button className="secondary-button" type="button" disabled={approvalBusy || decisionLocked} onClick={() => void onApproval("rejected")}>
+			<button className="secondary-button" type="button" disabled={approvalBusy || decisionLocked || !decisionReason.trim()} onClick={() => void onApproval("rejected", decisionReason.trim())}>
               <RotateCcw size={18} aria-hidden="true" />
               Reject
             </button>
@@ -783,7 +994,11 @@ function FixCenterView({
             </button>
             <button className="secondary-button" type="button" onClick={() => void onEvidenceBundle()}>
               <Database size={18} aria-hidden="true" />
-              Evidence
+              Build evidence bundle
+            </button>
+            <button className="secondary-button" type="button" disabled={!evidenceBundle} onClick={onExportEvidenceBundle}>
+              <Database size={18} aria-hidden="true" />
+              Export evidence JSON
             </button>
           </div>
         </div>
@@ -800,16 +1015,61 @@ function FixCenterView({
           <p className="summary-text">{diff.summary}</p>
           <div className="action-list">
             {diff.manifests.map((manifest) => (
-              <div className="action-row" key={`${manifest.actionType}-${manifest.target.kind}-${manifest.target.name}`}>
-                <GitPullRequest size={18} aria-hidden="true" />
-                <div>
-                  <strong>{humanize(manifest.actionType)}</strong>
-                  <span>{manifest.diff}</span>
+              <div className="manifest-block" key={`${manifest.actionType}-${manifest.target.kind}-${manifest.target.name}`}>
+                <div className="action-row">
+                  <GitPullRequest size={18} aria-hidden="true" />
+                  <div>
+                    <strong>{humanize(manifest.actionType)}</strong>
+                    <span>{manifest.diff}</span>
+                  </div>
+                  <code>{manifest.writeMode}</code>
                 </div>
-                <code>{manifest.writeMode}</code>
+                <div className="two-column-list">
+                  <div>
+                    <h3>Required permissions</h3>
+                    <ul>{(manifest.requiredPermissions ?? []).map((item) => <li key={item}>{item}</li>)}</ul>
+                  </div>
+                  <div>
+                    <h3>Failure and rollback</h3>
+                    <ul>
+                      <li>{manifest.failureHandling || "No failure policy reported."}</li>
+                      {(manifest.rollbackProcedure ?? []).map((item) => <li key={item}>{item}</li>)}
+                    </ul>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {run && (
+        <div className="panel wide-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Controller-owned run {run.id}</p>
+              <h2>{humanize(run.state)}</h2>
+            </div>
+            <span className="status-pill signal">live CRD status</span>
+          </div>
+          <p className="summary-text">{run.validationResult}</p>
+          <div className="action-list">
+            {(run.actionStatuses ?? []).map((status) => (
+              <div className="action-row" key={`${status.actionType}-${status.state}`}>
+                <Activity size={18} aria-hidden="true" />
+                <div><strong>{humanize(status.actionType)}</strong><span>{status.message}</span></div>
+                <code>{humanize(status.state)}</code>
+              </div>
+            ))}
+          </div>
+          <div className="fact-grid dense">
+            <Fact label="Rollback snapshot" value={run.rollbackMetadata || "not captured"} />
+            <Fact label="Last update" value={run.updatedAt ? new Date(run.updatedAt).toLocaleString() : "pending"} />
+          </div>
+          <button className="secondary-button" type="button" disabled={approvalBusy || !["succeeded", "failed", "verifying"].includes(run.state)} onClick={() => void onRollback()}>
+            <RotateCcw size={18} aria-hidden="true" />
+            Request rollback
+          </button>
         </div>
       )}
 
@@ -929,18 +1189,23 @@ function PolicyView({ findings, dashboard }: { findings: Finding[]; dashboard: D
 function ExperimentsView({
   experiments,
   run,
-  onStart
+  message,
+  onStart,
+  onDecision
 }: {
   experiments: ChaosExperiment[];
   run: ChaosExperimentRun | null;
+  message: string;
   onStart: (experimentId: string, manifest: string) => void | Promise<void>;
+  onDecision: (action: "approve" | "reject" | "execute" | "abort", reason: string) => void | Promise<void>;
 }) {
   const [customManifest, setCustomManifest] = useState(
-    "apiVersion: chaos-mesh.org/v1alpha1\nkind: NetworkChaos\nmetadata:\n  name: kubeathrix-custom\n  namespace: default\nspec:\n  action: delay\n  mode: one\n  selector:\n    namespaces:\n      - default\n  delay:\n    latency: \"100ms\"\n  duration: \"60s\""
+    "apiVersion: chaos-mesh.org/v1alpha1\nkind: NetworkChaos\nmetadata:\n  name: kubeathrix-custom\n  namespace: default\nspec:\n  action: delay\n  direction: to\n  mode: one\n  selector:\n    namespaces:\n      - default\n    labelSelectors:\n      app.kubernetes.io/name: example\n  delay:\n    latency: \"100ms\"\n  duration: \"60s\""
   );
   const [targetNamespace, setTargetNamespace] = useState("default");
   const [targetLabelKey, setTargetLabelKey] = useState("app.kubernetes.io/name");
   const [targetLabelValue, setTargetLabelValue] = useState("");
+  const [decisionReason, setDecisionReason] = useState("");
   const availableExperiments = experiments.length > 0 ? experiments : [];
   const targetReady = targetNamespace.trim() !== "" && targetLabelKey.trim() !== "" && targetLabelValue.trim() !== "";
   const prepareManifest = (manifest: string) =>
@@ -954,7 +1219,7 @@ function ExperimentsView({
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Verification</p>
-            <h2>Pre-ready chaos experiments</h2>
+            <h2>Bounded chaos experiments</h2>
           </div>
           <FlaskConical size={20} aria-hidden="true" />
         </div>
@@ -994,7 +1259,7 @@ function ExperimentsView({
               <div className="button-row">
                 <button className="primary-button" type="button" disabled={!targetReady} onClick={() => void onStart(experiment.id, prepareManifest(experiment.manifest))}>
                   <PlayCircle size={18} aria-hidden="true" />
-                  Start preflight
+                  Request bounded run
                 </button>
                 <code>{experiment.target}</code>
               </div>
@@ -1029,7 +1294,7 @@ function ExperimentsView({
           </label>
           <button className="primary-button" type="button" onClick={() => void onStart("custom", customManifest)}>
             <PlayCircle size={18} aria-hidden="true" />
-            Start custom preflight
+            Request custom run
           </button>
         </div>
       </div>
@@ -1038,20 +1303,42 @@ function ExperimentsView({
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Run state</p>
-            <h2>Experiment execution gate</h2>
+            <h2>Persistent experiment run</h2>
           </div>
-          <span className="status-pill warning">approval guarded</span>
+          <span className="status-pill muted">{run && run.status !== "preflight_validated" ? "persistent lifecycle" : "preflight by default"}</span>
         </div>
         {run ? (
-          <div className="timeline">
-            <div className="timeline-item pass">
-              <strong>{humanize(run.status)}</strong>
-              <span>{run.message}</span>
-              <small>{run.id}</small>
+          <div>
+            <div className="timeline">
+              <div className={run.status === "failed" ? "timeline-item danger" : "timeline-item pass"}>
+                <strong>{humanize(run.status)}</strong>
+                <span>{run.message}</span>
+                <small>{run.id} · {run.resource?.namespace}/{run.resource?.name} · {run.durationSeconds}s · target count {run.targetCount}</small>
+                {run.injectionDeadline && run.status === "execution_requested" && <small>Injection proof deadline: {new Date(run.injectionDeadline).toLocaleString()}</small>}
+                {run.failureReason && <small>Failure: {run.failureReason}</small>}
+                {run.recoveryMessage && <small>Recovery: {run.recoveryMessage}</small>}
+              </div>
+            </div>
+            {message && <p className="summary-text">{message}</p>}
+            {["pending_approval", "approved", "execution_requested", "running", "cleanup_requested", "verifying_recovery"].includes(run.status) && (
+              <label>
+                <span>Decision or abort reason</span>
+                <input value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="Required for approval, rejection, or abort" />
+              </label>
+            )}
+            <div className="button-row">
+              {run.status === "pending_approval" && <>
+                <button className="primary-button" type="button" disabled={!decisionReason.trim()} onClick={() => void onDecision("approve", decisionReason)}>Approve</button>
+                <button className="secondary-button" type="button" disabled={!decisionReason.trim()} onClick={() => void onDecision("reject", decisionReason)}>Reject</button>
+              </>}
+              {run.status === "approved" && <button className="primary-button" type="button" onClick={() => void onDecision("execute", "")}>Execute approved run</button>}
+              {["approved", "execution_requested", "running", "cleanup_requested", "verifying_recovery"].includes(run.status) && (
+                <button className="secondary-button" type="button" disabled={run.status !== "approved" && !decisionReason.trim()} onClick={() => void onDecision("abort", decisionReason || "cancelled before execution")}>Abort and clean up</button>
+              )}
             </div>
           </div>
         ) : (
-          <p className="summary-text">Start a predefined or custom manifest to create a preflight-ready chaos run.</p>
+          <p className="summary-text">Request a predefined or custom manifest. Execution-enabled installations persist a separate approval, execution, cleanup, and recovery lifecycle; default installations stop after preflight.</p>
         )}
       </div>
     </section>
@@ -1097,10 +1384,11 @@ function IntegrationsView({ integrations, health }: { integrations: Integration[
               </div>
               <span className={integration.enabled ? "status-dot online" : "status-dot"} />
             </div>
-            <p className="summary-text">{integration.enabled ? "Enabled by Helm values and available to the normalizer." : "Not installed or disabled in Helm values."}</p>
+            <p className="summary-text">{integration.enabled ? "A supported Kubernetes report API was discovered and queried." : "No supported report API was discovered; configuration flags alone do not count as healthy."}</p>
             <div className="fact-grid dense">
               <Fact label="Health" value={details?.health ?? integration.status} />
               <Fact label="Data last seen" value={details?.dataLastSeen ?? "unknown"} />
+              <Fact label="Normalized findings" value={details?.findingsCount ?? 0} />
             </div>
             <div className="preflight-list">
               {(details?.permissions ?? []).slice(0, 3).map((permission) => (
@@ -1115,7 +1403,14 @@ function IntegrationsView({ integrations, health }: { integrations: Integration[
                   {gap}
                 </span>
               ))}
+              {(details?.supportedVersions ?? []).map((version) => (
+                <span key={version}>
+                  <Database size={15} aria-hidden="true" />
+                  {version}
+                </span>
+              ))}
             </div>
+            {details?.errorState && <p className="summary-text">{details.errorState}</p>}
             <span className="status-pill muted">{integration.status}</span>
           </div>
         );
@@ -1130,8 +1425,8 @@ function SettingsView({ providers }: { providers: ModelProviderSettings | null }
       <div className="panel wide-panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Model gateway</p>
-            <h2>Provider references</h2>
+			<p className="eyebrow">Optional AI (not active)</p>
+			<h2>Provider reference inventory</h2>
           </div>
           <KeyRound size={20} aria-hidden="true" />
         </div>
@@ -1147,7 +1442,7 @@ function SettingsView({ providers }: { providers: ModelProviderSettings | null }
             </div>
           ))}
         </div>
-        <p className="summary-text">Raw API keys are intentionally excluded from the UI schema. Use a Kubernetes Secret or external secret reference.</p>
+		<p className="summary-text">KubeAthrix 0.2.0 has no model invocation gateway. These secret-reference records are inventory only and are never resolved or called. Planning remains deterministic. Raw API keys are excluded from the API and browser schema.</p>
       </div>
     </section>
   );
@@ -1177,8 +1472,8 @@ function Fact({ label, value }: { label: string; value: string | number }) {
 }
 
 function remediationBadge(plan: RemediationPlan) {
-  if (plan.status === "dry_run_verified") {
-    return { label: "Dry-run verified", tone: "signal" };
+  if (plan.status === "approved") {
+    return { label: "Approved; not executed", tone: "signal" };
   }
   if (plan.status === "rejected") {
     return { label: "Rejected", tone: "danger" };
@@ -1194,6 +1489,10 @@ function remediationBadge(plan: RemediationPlan) {
 
 function humanize(value: string) {
   return value.replaceAll("_", " ");
+}
+
+function safeFilename(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96) || "bundle";
 }
 
 export default App;

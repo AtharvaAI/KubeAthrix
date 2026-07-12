@@ -17,7 +17,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -158,11 +157,6 @@ func (i *Inspector) Snapshot(ctx context.Context) (core.ClusterSnapshot, error) 
 	if err != nil {
 		return core.ClusterSnapshot{}, fmt.Errorf("list clusterrolebindings: %w", err)
 	}
-	secretCount, err := i.countCoreMetadata(ctx, "secrets")
-	if err != nil {
-		return core.ClusterSnapshot{}, fmt.Errorf("count secret metadata: %w", err)
-	}
-
 	now := i.now().UTC()
 	inventory := core.ClusterInventory{
 		Nodes:                    len(nodes.Items),
@@ -178,7 +172,6 @@ func (i *Inspector) Snapshot(ctx context.Context) (core.ClusterSnapshot, error) 
 		Ingresses:                len(ingresses.Items),
 		Jobs:                     len(jobs.Items),
 		ConfigMaps:               len(configMaps.Items),
-		Secrets:                  secretCount,
 		ServiceAccounts:          len(serviceAccounts.Items),
 		Roles:                    len(roles.Items),
 		RoleBindings:             len(roleBindings.Items),
@@ -213,29 +206,6 @@ func (i *Inspector) Snapshot(ctx context.Context) (core.ClusterSnapshot, error) 
 		Compliance:  compliance,
 		Experiments: core.DefaultChaosExperiments(),
 	}, nil
-}
-
-func (i *Inspector) countCoreMetadata(ctx context.Context, resource string) (int, error) {
-	count := 0
-	continueToken := ""
-	for {
-		opts := metav1.ListOptions{Limit: 500, Continue: continueToken}
-		var list metav1.PartialObjectMetadataList
-		err := i.client.CoreV1().RESTClient().Get().
-			Resource(resource).
-			VersionedParams(&opts, scheme.ParameterCodec).
-			SetHeader("Accept", "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1").
-			Do(ctx).
-			Into(&list)
-		if err != nil {
-			return 0, err
-		}
-		count += len(list.Items)
-		if list.Continue == "" {
-			return count, nil
-		}
-		continueToken = list.Continue
-	}
 }
 
 func scanFindings(now time.Time, nodes []corev1.Node, namespaces []corev1.Namespace, pods []corev1.Pod, services []corev1.Service, deployments []appsv1.Deployment, statefulSets []appsv1.StatefulSet, daemonSets []appsv1.DaemonSet, ingresses []networkingv1.Ingress, pvcs []corev1.PersistentVolumeClaim, pdbs []policyv1.PodDisruptionBudget, networkPolicies []networkingv1.NetworkPolicy, quotas []corev1.ResourceQuota, limitRanges []corev1.LimitRange, roles []rbacv1.Role, roleBindings []rbacv1.RoleBinding, clusterRoles []rbacv1.ClusterRole, clusterRoleBindings []rbacv1.ClusterRoleBinding) []core.Finding {
@@ -806,7 +776,7 @@ func nodeUnderPressure(node corev1.Node) bool {
 }
 
 func newClusterFinding(now time.Time, id, source, title string, severity core.Severity, resource core.ResourceRef, evidence string, fixability core.Fixability, remediationState string, riskScore int, recommendation string) core.Finding {
-	return core.Finding{
+	finding := core.Finding{
 		ID:       id,
 		Source:   source,
 		Title:    title,
@@ -830,6 +800,19 @@ func newClusterFinding(now time.Time, id, source, title string, severity core.Se
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
+	finding.CorrelationKeys.Namespace = resource.Namespace
+	if resource.Kind == "Namespace" {
+		finding.CorrelationKeys.Namespace = resource.Name
+	}
+	switch resource.Kind {
+	case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Pod":
+		finding.CorrelationKeys.Workload = resource.Namespace + "/" + resource.Kind + "/" + resource.Name
+	case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "ServiceAccount":
+		finding.CorrelationKeys.Identity = resource.String()
+	case "Service", "Ingress", "NetworkPolicy":
+		finding.CorrelationKeys.NetworkExposure = resource.String()
+	}
+	return finding
 }
 
 func complianceControls(inventory core.ClusterInventory, findings []core.Finding) []core.ComplianceControl {
@@ -882,7 +865,7 @@ func countControls(controls []core.ComplianceControl, status string) int {
 }
 
 func resourcesScanned(inventory core.ClusterInventory) int {
-	return inventory.Nodes + inventory.Namespaces + inventory.Pods + inventory.Deployments + inventory.StatefulSets + inventory.DaemonSets + inventory.Services + inventory.Ingresses + inventory.Jobs + inventory.ConfigMaps + inventory.Secrets + inventory.ServiceAccounts + inventory.Roles + inventory.RoleBindings + inventory.ClusterRoles + inventory.ClusterRoleBindings + inventory.NetworkPolicies + inventory.ResourceQuotas + inventory.LimitRanges + inventory.PersistentVolumeClaims + inventory.PodDisruptionBudgets + inventory.HorizontalPodAutoscalers
+	return inventory.Nodes + inventory.Namespaces + inventory.Pods + inventory.Deployments + inventory.StatefulSets + inventory.DaemonSets + inventory.Services + inventory.Ingresses + inventory.Jobs + inventory.ConfigMaps + inventory.ServiceAccounts + inventory.Roles + inventory.RoleBindings + inventory.ClusterRoles + inventory.ClusterRoleBindings + inventory.NetworkPolicies + inventory.ResourceQuotas + inventory.LimitRanges + inventory.PersistentVolumeClaims + inventory.PodDisruptionBudgets + inventory.HorizontalPodAutoscalers
 }
 
 func readyNodeCount(nodes []corev1.Node) int {

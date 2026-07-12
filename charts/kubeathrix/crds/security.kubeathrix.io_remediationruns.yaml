@@ -46,7 +46,7 @@ spec:
               properties:
                 state:
                   type: string
-                  enum: ["pending_approval", "dry_run_passed", "running", "succeeded", "failed", "rolled_back"]
+                  enum: ["pending_approval", "prepared", "approved", "execution_requested", "proposal_only", "dry_run_passed", "running", "verifying", "succeeded", "failed", "rollback_requested", "rolled_back"]
                 actionStatuses:
                   type: array
                   items:
@@ -66,7 +66,6 @@ spec:
                   type: string
                 observedGeneration:
                   type: integer
-                  format: int64
                 lastTransitionTime:
                   type: string
                   format: date-time
