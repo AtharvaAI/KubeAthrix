@@ -4,8 +4,12 @@ This smoke test validates the MVP install shape.
 
 ```powershell
 kind create cluster --name kubeathrix
-helm dependency update charts/kubeathrix
-helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace --set auth.insecureDevelopmentMode=true
+helm upgrade --install kubeathrix ./charts/kubeathrix `
+  -n kubeathrix --create-namespace `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
+  --set auth.insecureDevelopmentMode=true
 kubectl -n kubeathrix wait --for=condition=available deployment/kubeathrix-api --timeout=180s
 kubectl -n kubeathrix wait --for=condition=available deployment/kubeathrix-console --timeout=180s
 kubectl -n kubeathrix get crds | Select-String kubeathrix

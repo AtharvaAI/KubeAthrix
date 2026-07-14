@@ -100,7 +100,10 @@ ownership label before restarting reconciliation.
 
 ## Upgrade And Rollback
 
-- Run `helm template` and `helm lint` before upgrade.
+- Run `helm template`, `helm lint`, and a server-side dry run before upgrade.
+- Use `helm upgrade --install ... --dependency-update --reset-values --atomic --cleanup-on-fail --timeout 10m` for routine upgrades.
+- Include the environment values file with `-f` whenever the release depends on non-default settings.
 - Confirm CRD schema changes are backward compatible.
+- Treat bundled Postgres storage class or claim template changes as a storage migration, not a values-only Helm upgrade.
 - Upgrade core engines in a maintenance window if admission behavior changes.
 - Roll back with `helm rollback` and restore database backups only if API migrations were applied.

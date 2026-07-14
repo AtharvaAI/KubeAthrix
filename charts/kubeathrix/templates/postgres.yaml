@@ -1,8 +1,26 @@
 {{- if not .Values.postgres.external }}
+{{- $postgresName := printf "%s-postgres" (include "kubeathrix.fullname" .) -}}
+{{- $existingPostgres := lookup "apps/v1" "StatefulSet" .Release.Namespace $postgresName -}}
+{{- $existingPostgresClaims := list -}}
+{{- if and .Release.IsUpgrade $existingPostgres -}}
+{{- $existingPostgresClaims = dig "spec" "volumeClaimTemplates" (list) $existingPostgres -}}
+{{- end -}}
+{{- $preservedPostgresClaims := list -}}
+{{- range $claim := $existingPostgresClaims -}}
+{{- $claimCopy := deepCopy $claim -}}
+{{- $_ := unset $claimCopy "status" -}}
+{{- if hasKey $claimCopy "metadata" -}}
+{{- $_ := unset $claimCopy.metadata "creationTimestamp" -}}
+{{- $_ := unset $claimCopy.metadata "resourceVersion" -}}
+{{- $_ := unset $claimCopy.metadata "uid" -}}
+{{- $_ := unset $claimCopy.metadata "managedFields" -}}
+{{- end -}}
+{{- $preservedPostgresClaims = append $preservedPostgresClaims $claimCopy -}}
+{{- end -}}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "kubeathrix.fullname" . }}-postgres
+  name: {{ $postgresName }}
   labels:
     {{- include "kubeathrix.labels" . | nindent 4 }}
 spec:
@@ -18,11 +36,11 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "kubeathrix.fullname" . }}-postgres
+  name: {{ $postgresName }}
   labels:
     {{- include "kubeathrix.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ include "kubeathrix.fullname" . }}-postgres
+  serviceName: {{ $postgresName }}
   replicas: 1
   selector:
     matchLabels:
@@ -36,12 +54,41 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: {{ .Values.postgres.gid }}
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: postgres-permissions
+          image: {{ .Values.postgres.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - >-
+              mkdir -p /var/lib/postgresql/data/pgdata /var/run/postgresql /tmp
+              && chown -R {{ .Values.postgres.uid }}:{{ .Values.postgres.gid }} /var/lib/postgresql/data /var/run/postgresql /tmp
+              && chmod 700 /var/lib/postgresql/data/pgdata
+              && chmod 3775 /var/run/postgresql
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 0
+            runAsGroup: 0
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: runtime
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.resources.postgres | nindent 12 }}
       containers:
         - name: postgres
           image: {{ .Values.postgres.image | quote }}
@@ -49,6 +96,9 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: {{ .Values.postgres.uid }}
+            runAsGroup: {{ .Values.postgres.gid }}
             capabilities:
               drop: ["ALL"]
           ports:
@@ -87,6 +137,9 @@ spec:
         - name: tmp
           emptyDir: {}
   volumeClaimTemplates:
+{{- if gt (len $preservedPostgresClaims) 0 }}
+{{- toYaml $preservedPostgresClaims | nindent 4 }}
+{{- else }}
     - metadata:
         name: data
       spec:
@@ -97,4 +150,5 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgres.storageSize }}
+{{- end }}
 {{- end }}

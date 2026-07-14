@@ -3,6 +3,16 @@ replicaCount:
   console: 1
   operator: 1
 
+deploymentStrategy:
+  # Replace one pod at a time by default so upgrades fit small clusters that do
+  # not have spare pod capacity for surge pods.
+  maxSurge: 0
+  maxUnavailable: 1
+
+rollout:
+  # Set to any new value to force a Deployment rollout when reusing mutable tags.
+  restartToken: ""
+
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
@@ -94,6 +104,9 @@ auth:
 postgres:
   external: false
   image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+  # The pinned Alpine Postgres image uses UID/GID 70 for the postgres user.
+  uid: 70
+  gid: 70
   # Empty uses the cluster's default StorageClass. External managed Postgres is
   # recommended for production.
   storageClassName: ""

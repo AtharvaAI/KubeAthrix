@@ -21,12 +21,21 @@ metadata:
     {{- include "kubeathrix.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount.api }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.deploymentStrategy.maxSurge }}
+      maxUnavailable: {{ .Values.deploymentStrategy.maxUnavailable }}
   selector:
     matchLabels:
       {{- include "kubeathrix.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: api
   template:
     metadata:
+      {{- if .Values.rollout.restartToken }}
+      annotations:
+        kubeathrix.io/restart-token: {{ .Values.rollout.restartToken | quote }}
+      {{- end }}
       labels:
         {{- include "kubeathrix.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api

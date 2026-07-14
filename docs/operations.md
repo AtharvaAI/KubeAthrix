@@ -24,6 +24,12 @@ finding count, report size, API latency, controller queue depth, and database
 growth. Raise API/operator memory before enabling several scanners on a large
 cluster. The bundled single Postgres pod is not HA.
 
+The chart defaults Deployment upgrades to `maxSurge=0` and `maxUnavailable=1`
+so image updates can complete on small clusters without spare pod slots. This
+keeps the one-command Helm upgrade path usable on constrained demos, but it can
+briefly reduce component availability when a replica count is `1`. Increase
+replicas and adjust `deploymentStrategy` for production availability targets.
+
 ## Postgres backup and restore
 
 Use a managed external Postgres service in production. Test point-in-time

@@ -71,11 +71,14 @@ kind create cluster --name kubeathrix
 kind load docker-image prashantdey/kubeathrix:api-dev --name kubeathrix
 kind load docker-image prashantdey/kubeathrix:console-dev --name kubeathrix
 kind load docker-image prashantdey/kubeathrix:operator-dev --name kubeathrix
-helm dependency build charts/kubeathrix
 $imageRepository = "prashantdey/kubeathrix"
 helm upgrade --install kubeathrix ./charts/kubeathrix `
   -n kubeathrix --create-namespace `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
   --set auth.insecureDevelopmentMode=true `
+  --set-string rollout.restartToken=$(Get-Date -Format yyyyMMddHHmmss) `
   --set image.api.repository=$imageRepository `
   --set image.api.tag=api-dev `
   --set image.console.repository=$imageRepository `

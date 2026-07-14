@@ -17,8 +17,10 @@ bypass is enabled. Create any confidential-client secret before installing:
 kubectl create namespace kubeathrix
 kubectl -n kubeathrix create secret generic kubeathrix-oidc `
   --from-literal=client-secret='<OIDC client secret>'
-helm dependency build charts/kubeathrix
 helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
   --set auth.oidc.issuerURL=https://identity.example.com/realms/platform `
   --set auth.oidc.clientID=kubeathrix `
   --set auth.oidc.existingSecret=kubeathrix-oidc `
@@ -38,21 +40,42 @@ For fresh KubeAthrix installs, the Kyverno CRD migration hook is disabled by def
 
 <!-- x-release-please-start-version -->
 ```powershell
-helm dependency update charts/kubeathrix
 helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
   --set auth.insecureDevelopmentMode=true
 kubectl -n kubeathrix port-forward svc/kubeathrix-console 8080:80
 ```
 <!-- x-release-please-end -->
 
+Use the same `helm upgrade --install` command for first install and upgrades.
+`--dependency-update` removes the separate dependency step, `--reset-values`
+lets new chart defaults such as image tags advance, and `--atomic` rolls back
+the release if readiness does not complete before the timeout. Keep production
+customizations in a values file and pass it with `-f` on the same command.
+
+If you intentionally reuse mutable image tags, set `rollout.restartToken` to a
+new value in the same command so Kubernetes creates a fresh ReplicaSet.
+
 The demo bypass grants administrator access to every request and must not be
 exposed outside an isolated local environment. Services remain `ClusterIP`.
 
-On EKS, the bundled Postgres StatefulSet uses the `gp2` storage class by default. Override it when your cluster uses a different storage class:
+On first install, an empty `postgres.storageClassName` uses the cluster's default StorageClass. Set it only when you need a specific class:
 
 ```powershell
 --set postgres.storageClassName=<storage-class-name>
 ```
+
+The bundled Postgres StatefulSet preserves its existing `volumeClaimTemplates`
+during upgrades because Kubernetes does not allow those fields to be patched.
+Changing storage class, access mode, or the claim template size after install is
+a storage migration; use external managed Postgres for production.
+
+The pinned Alpine Postgres image runs as UID/GID `70`. The chart repairs mounted
+volume ownership during startup and then runs Postgres as that non-root user. If
+you override `postgres.image`, set `postgres.uid` and `postgres.gid` to match the
+image's `postgres` user.
 
 The chart sets `PGDATA=/var/lib/postgresql/data/pgdata` so Postgres initializes in a subdirectory of the mounted EBS volume rather than the mount root.
 

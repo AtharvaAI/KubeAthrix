@@ -51,8 +51,10 @@ The chart defaults to the pinned published image tags.
 
 <!-- x-release-please-start-version -->
 ```powershell
-helm dependency build charts/kubeathrix
 helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
   --set auth.insecureDevelopmentMode=true `
   --set image.api.repository=docker.io/prashantdey/kubeathrix `
   --set image.api.tag=api-0.2.0 `
@@ -67,9 +69,17 @@ To track the most recent stable release:
 
 ```powershell
 helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
+  --set auth.insecureDevelopmentMode=true `
+  --set-string rollout.restartToken=$(Get-Date -Format yyyyMMddHHmmss) `
   --set image.api.tag=api-latest `
+  --set image.api.pullPolicy=Always `
   --set image.console.tag=console-latest `
-  --set image.operator.tag=operator-latest
+  --set image.console.pullPolicy=Always `
+  --set image.operator.tag=operator-latest `
+  --set image.operator.pullPolicy=Always
 ```
 
 Use pinned version tags for production environments. Use `*-latest` only for demos, sandboxes, or intentionally rolling environments.
