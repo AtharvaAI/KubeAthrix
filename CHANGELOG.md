@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.3](https://github.com/AtharvaAI/KubeAthrix/compare/v0.2.2...v0.2.3) (2026-07-18)
+
+
+### Bug Fixes
+
+* keep Helm image versions synchronized ([12bada2](https://github.com/AtharvaAI/KubeAthrix/commit/12bada2130a8ddc9fa9e051c3ba330d52121d0f4))
+* track latest stable Helm images ([a307469](https://github.com/AtharvaAI/KubeAthrix/commit/a307469a32fd5cbd1271a73658e4c9a7800ea01c))
+* version Helm image defaults ([45a4ce5](https://github.com/AtharvaAI/KubeAthrix/commit/45a4ce5853692becd9355d4d406b6ad92214fd3a))
+
 ## [0.2.2](https://github.com/AtharvaAI/KubeAthrix/compare/v0.2.1...v0.2.2) (2026-07-18)
 
 

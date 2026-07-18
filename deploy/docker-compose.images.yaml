@@ -17,7 +17,7 @@ services:
 
   kubeathrix-api:
     # x-release-please-start-version
-    image: docker.io/prashantdey/kubeathrix:${KUBEATHRIX_API_TAG:-api-0.2.2}
+    image: docker.io/prashantdey/kubeathrix:${KUBEATHRIX_API_TAG:-api-0.2.3}
     # x-release-please-end
     environment:
       DATABASE_URL: postgres://kubeathrix:kubeathrix@postgres:5432/kubeathrix?sslmode=disable
@@ -38,7 +38,7 @@ services:
 
   kubeathrix-console:
     # x-release-please-start-version
-    image: docker.io/prashantdey/kubeathrix:${KUBEATHRIX_CONSOLE_TAG:-console-0.2.2}
+    image: docker.io/prashantdey/kubeathrix:${KUBEATHRIX_CONSOLE_TAG:-console-0.2.3}
     # x-release-please-end
     environment:
       KUBEATHRIX_API_UPSTREAM: http://kubeathrix-api:8080
