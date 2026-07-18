@@ -393,6 +393,11 @@ jobs:
           sha256sum dist/*.tgz > dist/SHA256SUMS
       - name: Log in to Docker Hub for OCI chart
         run: echo '${{ secrets.DOCKERHUB_TOKEN }}' | helm registry login docker.io -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
+      - name: Log in to Docker Hub for chart signing
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Push and sign OCI chart
         run: |
           OUTPUT=$(helm push "dist/kubeathrix-${{ steps.version.outputs.version }}.tgz" oci://docker.io/prashantdey 2>&1)
