@@ -187,13 +187,13 @@ image digests, signatures, SBOMs, and provenance.
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: api-0.2.1
+    tag: api-0.2.2
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: console-0.2.1
+    tag: console-0.2.2
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: operator-0.2.1
+    tag: operator-0.2.2
 ```
 <!-- x-release-please-end -->
 

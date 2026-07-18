@@ -14,9 +14,9 @@ From the repository root:
 
 <!-- x-release-please-start-version -->
 ```powershell
-docker build -t prashantdey/kubeathrix:api-0.2.1 -f services/api/Dockerfile .
-docker build -t prashantdey/kubeathrix:console-0.2.1 -f apps/console/Dockerfile .
-docker build -t prashantdey/kubeathrix:operator-0.2.1 -f operator/Dockerfile .
+docker build -t prashantdey/kubeathrix:api-0.2.2 -f services/api/Dockerfile .
+docker build -t prashantdey/kubeathrix:console-0.2.2 -f apps/console/Dockerfile .
+docker build -t prashantdey/kubeathrix:operator-0.2.2 -f operator/Dockerfile .
 ```
 <!-- x-release-please-end -->
 
@@ -35,9 +35,9 @@ CI should publish official release images. Use this only when testing the Docker
 <!-- x-release-please-start-version -->
 ```powershell
 docker login
-docker push prashantdey/kubeathrix:api-0.2.1
-docker push prashantdey/kubeathrix:console-0.2.1
-docker push prashantdey/kubeathrix:operator-0.2.1
+docker push prashantdey/kubeathrix:api-0.2.2
+docker push prashantdey/kubeathrix:console-0.2.2
+docker push prashantdey/kubeathrix:operator-0.2.2
 ```
 <!-- x-release-please-end -->
 
