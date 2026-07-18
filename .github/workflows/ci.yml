@@ -90,6 +90,7 @@ jobs:
       - run: node scripts/check-versions.mjs
       - name: Validate OpenAPI
         run: npx --yes @redocly/cli@1.34.3 lint services/api/openapi.yaml
+      - run: bash scripts/setup-helm-repositories.sh
       - run: helm dependency build charts/kubeathrix
       - run: helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true
       - name: Render secure and demo configurations
@@ -194,6 +195,7 @@ jobs:
           docker build -f apps/console/Dockerfile -t kubeathrix/console:ci .
           docker build -f operator/Dockerfile -t kubeathrix/operator:ci .
           kind load docker-image --name kubeathrix-ci kubeathrix/api:ci kubeathrix/console:ci kubeathrix/operator:ci
+          bash scripts/setup-helm-repositories.sh
           helm dependency build charts/kubeathrix
           helm upgrade --install kubeathrix charts/kubeathrix -n kubeathrix --create-namespace --wait --timeout 5m \
             --set auth.insecureDevelopmentMode=true \

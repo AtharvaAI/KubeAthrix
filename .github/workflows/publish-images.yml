@@ -142,6 +142,7 @@ jobs:
         run: |
           node scripts/check-versions.mjs
           npx --yes @redocly/cli@1.34.3 lint services/api/openapi.yaml
+          bash scripts/setup-helm-repositories.sh
           helm dependency build charts/kubeathrix
           helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true
           helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.oidc.issuerURL=https://issuer.example.test --set auth.oidc.clientID=kubeathrix > rendered-secure.yaml
@@ -218,6 +219,7 @@ jobs:
           docker build -f apps/console/Dockerfile -t kubeathrix/console:release-candidate .
           docker build -f operator/Dockerfile -t kubeathrix/operator:release-candidate .
           kind load docker-image --name kubeathrix-release kubeathrix/api:release-candidate kubeathrix/console:release-candidate kubeathrix/operator:release-candidate
+          bash scripts/setup-helm-repositories.sh
           helm dependency build charts/kubeathrix
           helm upgrade --install kubeathrix charts/kubeathrix -n kubeathrix --create-namespace --wait --timeout 5m \
             --set auth.insecureDevelopmentMode=true \
@@ -384,6 +386,7 @@ jobs:
           OPERATOR_DIGEST=$(tr -d '\r\n' < digests/operator)
           export API_DIGEST CONSOLE_DIGEST OPERATOR_DIGEST
           yq -i '.image.api.digest = strenv(API_DIGEST) | .image.console.digest = strenv(CONSOLE_DIGEST) | .image.operator.digest = strenv(OPERATOR_DIGEST)' charts/kubeathrix/values.yaml
+          bash scripts/setup-helm-repositories.sh
           helm dependency build charts/kubeathrix
           helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true
           helm package charts/kubeathrix --destination dist
