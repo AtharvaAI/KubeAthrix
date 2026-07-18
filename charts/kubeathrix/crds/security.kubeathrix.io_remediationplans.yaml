@@ -139,6 +139,46 @@ spec:
                       type: array
                       items:
                         type: string
+                ai:
+                  type: object
+                  required: ["provider", "model", "mode", "summary", "rootCause", "impact", "recommendedAction", "confidence", "autonomousPolicy", "generatedAt"]
+                  properties:
+                    provider:
+                      type: string
+                      maxLength: 128
+                    model:
+                      type: string
+                      maxLength: 256
+                    mode:
+                      type: string
+                      enum: ["assistive"]
+                    summary:
+                      type: string
+                      maxLength: 700
+                    rootCause:
+                      type: string
+                      maxLength: 900
+                    impact:
+                      type: string
+                      maxLength: 900
+                    recommendedAction:
+                      type: string
+                      maxLength: 256
+                    confidence:
+                      type: string
+                      enum: ["low", "medium", "high"]
+                    safetyNotes:
+                      type: array
+                      maxItems: 5
+                      items:
+                        type: string
+                        maxLength: 300
+                    autonomousPolicy:
+                      type: string
+                      maxLength: 1000
+                    generatedAt:
+                      type: string
+                      format: date-time
             status:
               type: object
               properties:

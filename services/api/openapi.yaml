@@ -126,6 +126,25 @@ paths:
           description: Finding detail
         "404":
           description: Finding not found
+  /api/managed-resources:
+    get:
+      operationId: getApiManagedResources
+      summary: List sanitized Kubernetes-managed external-resource evidence
+      description: >-
+        Returns only resources from the administrator's exact non-core GVR allowlist in the connected cluster.
+        Cluster-scoped objects and discovery warnings require cluster scope; namespace-scoped viewers receive only
+        resources, relationships, and findings wholly inside authorized namespaces. No cloud-provider API is called.
+      responses:
+        "200":
+          description: Managed-resource feature state and scope-filtered snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedResourceSnapshot"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /api/findings/{id}/status:
     patch:
       operationId: patchApiFindingsByIdStatus
@@ -188,7 +207,7 @@ paths:
     post:
       operationId: postApiRemediationPlansPreview
       summary: Preview a strict-schema remediation candidate without persisting it
-      description: Uses deterministic planning with evidence citations and a stable evidence hash.
+      description: Uses deterministic planning with evidence citations and a stable evidence hash. Optional AI decision support may annotate the candidate but cannot add executable actions.
       requestBody:
         required: true
         content:
@@ -204,11 +223,14 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "200":
           description: Remediation preview
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RemediationPreview" }
   /api/remediation-plans:
     post:
       operationId: postApiRemediationPlans
       summary: Create a typed remediation plan
-      description: The API creates typed actions only; no arbitrary shell or kubectl text is accepted.
+      description: The API creates typed actions only; no arbitrary shell or kubectl text is accepted. Optional AI decision support may explain the plan but execution remains catalog-gated.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -226,6 +248,9 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "201":
           description: Plan created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RemediationPlan" }
   /api/remediation-plans/{id}/diff:
     get:
       operationId: getApiRemediationPlansByIdDiff
@@ -508,7 +533,7 @@ paths:
   /api/settings/model-providers:
     get:
       operationId: getApiSettingsModelProviders
-      summary: Get inventory-only model provider references
+      summary: Get model provider references
       responses:
         "429":
           $ref: "#/components/responses/RateLimited"
@@ -516,8 +541,8 @@ paths:
           description: Provider settings
     put:
       operationId: putApiSettingsModelProviders
-      summary: Replace inventory-only model provider references
-      description: Version 0.2.0 does not resolve or invoke these references; raw API keys are intentionally not part of this schema.
+      summary: Replace model provider references
+      description: Raw API keys are intentionally not part of this schema. Runtime AI invocation is enabled separately on the API server and remains advisory.
       requestBody:
         required: true
         content:
@@ -567,6 +592,132 @@ components:
         kind: { type: string }
         namespace: { type: string }
         name: { type: string }
+    ManagedResourceSnapshot:
+      type: object
+      required: [enabled, resources, relationships, findings, warnings]
+      properties:
+        enabled: { type: boolean }
+        observedAt: { type: string, format: date-time }
+        resources:
+          type: array
+          items: { $ref: "#/components/schemas/ManagedResource" }
+        relationships:
+          type: array
+          items: { $ref: "#/components/schemas/ManagedResourceRelationship" }
+        findings:
+          type: array
+          items: { type: object }
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/ManagedResourceWarning" }
+    ManagedResource:
+      type: object
+      required: [id, apiGroup, version, plural, apiVersion, kind, name, status, provenance]
+      properties:
+        id: { type: string }
+        apiGroup: { type: string }
+        version: { type: string }
+        plural: { type: string }
+        apiVersion: { type: string }
+        kind: { type: string }
+        namespace: { type: string }
+        name: { type: string }
+        uid: { type: string }
+        generation: { type: integer, format: int64 }
+        createdAt: { type: string, format: date-time }
+        deletionTimestamp: { type: string, format: date-time }
+        finalizers:
+          type: array
+          items: { type: string }
+        externalId: { type: string, description: Sanitized controller-reported external identifier. }
+        status: { $ref: "#/components/schemas/ManagedResourceStatus" }
+        provenance: { $ref: "#/components/schemas/ManagedResourceProvenance" }
+    ManagedResourceStatus:
+      type: object
+      properties:
+        ready: { type: boolean }
+        synced: { type: boolean }
+        stalled: { type: boolean }
+        state: { type: string }
+        observedGeneration: { type: integer, format: int64 }
+        conditions:
+          type: array
+          items:
+            type: object
+            required: [type, status]
+            properties:
+              type: { type: string }
+              status: { type: string }
+              reason: { type: string }
+              observedGeneration: { type: integer, format: int64 }
+              lastTransitionTime: { type: string, format: date-time }
+    ManagedResourceProvenance:
+      type: object
+      required: [system, gitOps]
+      properties:
+        system: { type: string, enum: [argocd, flux, helm, crossplane, operator, unknown] }
+        controller: { type: string }
+        sourceRef: { type: string }
+        gitOps: { type: boolean }
+        signals:
+          type: array
+          items: { type: string }
+    ManagedResourceRelationship:
+      type: object
+      required: [from, to, type]
+      properties:
+        from: { $ref: "#/components/schemas/ManagedResourceReference" }
+        to: { $ref: "#/components/schemas/ManagedResourceReference" }
+        type: { type: string, enum: [owned_by, references, claimed_by] }
+        path: { type: string }
+    ManagedResourceReference:
+      type: object
+      required: [name]
+      properties:
+        apiVersion: { type: string }
+        kind: { type: string }
+        namespace: { type: string }
+        name: { type: string }
+        uid: { type: string }
+    ManagedResourceWarning:
+      type: object
+      required: [apiGroup, version, resource, code, message]
+      properties:
+        apiGroup: { type: string }
+        version: { type: string }
+        resource: { type: string }
+        code: { type: string }
+        message: { type: string }
+    RemediationPlan:
+      type: object
+      description: Typed deterministic remediation plan with optional advisory AI metadata.
+      properties:
+        ai: { $ref: "#/components/schemas/AIAnalysis" }
+      additionalProperties: true
+    RemediationPreview:
+      type: object
+      description: Non-persisted remediation preview with the same optional advisory AI metadata.
+      properties:
+        candidate: { $ref: "#/components/schemas/RemediationPlan" }
+        ai: { $ref: "#/components/schemas/AIAnalysis" }
+      additionalProperties: true
+    AIAnalysis:
+      type: object
+      required: [provider, model, mode, summary, rootCause, impact, recommendedAction, confidence, autonomousPolicy, generatedAt]
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        mode: { type: string, enum: [assistive] }
+        summary: { type: string }
+        rootCause: { type: string }
+        impact: { type: string }
+        recommendedAction: { type: string }
+        confidence: { type: string, enum: [low, medium, high] }
+        safetyNotes:
+          type: array
+          items: { type: string }
+        autonomousPolicy: { type: string }
+        generatedAt: { type: string, format: date-time }
     ChaosDecision:
       type: object
       required: [reason]

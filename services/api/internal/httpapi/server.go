@@ -20,6 +20,7 @@ import (
 	"github.com/atharvaai/kubeathrix/services/api/internal/auth"
 	"github.com/atharvaai/kubeathrix/services/api/internal/core"
 	findinglogic "github.com/atharvaai/kubeathrix/services/api/internal/findings"
+	"github.com/atharvaai/kubeathrix/services/api/internal/managedresources"
 	"github.com/atharvaai/kubeathrix/services/api/internal/store"
 )
 
@@ -52,6 +53,10 @@ type WorkflowClient interface {
 	RenderDiff(ctx context.Context, plan core.RemediationPlan) (core.RemediationDiff, error)
 }
 
+type approvalWorkflowClient interface {
+	ListApprovals(ctx context.Context) ([]core.ApprovalRequest, error)
+}
+
 type exceptionWorkflowClient interface {
 	CreateException(ctx context.Context, exception core.Exception) error
 	DeleteException(ctx context.Context, id string) error
@@ -63,6 +68,23 @@ type findingLifecycleWorkflowClient interface {
 
 type AdapterManager interface {
 	Collect(ctx context.Context) adapters.Collection
+}
+
+type AIAdvisor interface {
+	Analyze(ctx context.Context, finding core.Finding, plan core.RemediationPlan) (core.AIAnalysis, error)
+}
+
+type ManagedResourceSource interface {
+	Discover(ctx context.Context) (managedresources.Snapshot, error)
+}
+
+type managedResourceListResponse struct {
+	Enabled       bool                            `json:"enabled"`
+	ObservedAt    *time.Time                      `json:"observedAt,omitempty"`
+	Resources     []managedresources.Resource     `json:"resources"`
+	Relationships []managedresources.Relationship `json:"relationships"`
+	Findings      []core.Finding                  `json:"findings"`
+	Warnings      []managedresources.Warning      `json:"warnings"`
 }
 
 type Config struct {
@@ -79,6 +101,8 @@ type Config struct {
 	WorkflowClient       WorkflowClient
 	AllowMemoryWorkflows bool
 	AdapterManager       AdapterManager
+	ManagedResources     ManagedResourceSource
+	AIAdvisor            AIAdvisor
 	RiskConfig           findinglogic.Config
 	FindingExpiry        time.Duration
 }
@@ -90,6 +114,8 @@ type Server struct {
 	chaosManager     ChaosManager
 	workflowClient   WorkflowClient
 	adapterManager   AdapterManager
+	managedResources ManagedResourceSource
+	aiAdvisor        AIAdvisor
 	limiter          *requestLimiter
 	logger           *slog.Logger
 	metrics          *apiMetrics
@@ -103,7 +129,7 @@ func NewServer(repository store.Repository, config Config) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{repository: repository, config: config, clusterInspector: config.ClusterInspector, chaosManager: config.ChaosManager, workflowClient: config.WorkflowClient, adapterManager: config.AdapterManager, limiter: newRequestLimiter(config.RateLimitPerMinute), logger: logger, metrics: newAPIMetrics()}
+	return &Server{repository: repository, config: config, clusterInspector: config.ClusterInspector, chaosManager: config.ChaosManager, workflowClient: config.WorkflowClient, adapterManager: config.AdapterManager, managedResources: config.ManagedResources, aiAdvisor: config.AIAdvisor, limiter: newRequestLimiter(config.RateLimitPerMinute), logger: logger, metrics: newAPIMetrics()}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -117,6 +143,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dashboard", requireRole(auth.RoleViewer, s.dashboard))
 	mux.HandleFunc("GET /api/findings", requireRole(auth.RoleViewer, s.listFindings))
 	mux.HandleFunc("GET /api/findings/{id}", requireRole(auth.RoleViewer, s.getFinding))
+	mux.HandleFunc("GET /api/managed-resources", requireRole(auth.RoleViewer, s.listManagedResources))
 	mux.HandleFunc("PATCH /api/findings/{id}/status", requireRole(auth.RoleOperator, s.updateFindingStatus))
 	mux.HandleFunc("GET /api/exceptions", requireRole(auth.RoleViewer, s.listExceptions))
 	mux.HandleFunc("POST /api/exceptions", requireRole(auth.RoleOperator, s.createException))
@@ -321,6 +348,110 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, finding)
 }
 
+func (s *Server) listManagedResources(w http.ResponseWriter, r *http.Request) {
+	response := managedResourceListResponse{
+		Enabled:       s.managedResources != nil,
+		Resources:     []managedresources.Resource{},
+		Relationships: []managedresources.Relationship{},
+		Findings:      []core.Finding{},
+		Warnings:      []managedresources.Warning{},
+	}
+	if s.managedResources == nil {
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	snapshot, err := s.managedResources.Discover(r.Context())
+	if err != nil {
+		s.logger.Warn("managed resource discovery unavailable", "error", err)
+		writeError(w, http.StatusServiceUnavailable, errors.New("managed resource discovery is unavailable"))
+		return
+	}
+	if !snapshot.ObservedAt.IsZero() {
+		observedAt := snapshot.ObservedAt
+		response.ObservedAt = &observedAt
+	}
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, auth.ErrUnauthenticated)
+		return
+	}
+	if principal.CanAccessCluster(s.config.ClusterID) {
+		response.Resources = nonNilManagedResources(snapshot.Resources)
+		response.Relationships = nonNilManagedRelationships(snapshot.Relationships)
+		response.Findings = nonNilFindings(snapshot.Findings)
+		response.Warnings = nonNilManagedWarnings(snapshot.Warnings)
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	for _, resource := range snapshot.Resources {
+		if resource.Namespace != "" && principal.CanAccessNamespace(s.config.ClusterID, resource.Namespace) {
+			response.Resources = append(response.Resources, resource)
+		}
+	}
+	for _, relationship := range snapshot.Relationships {
+		if managedReferenceInResources(relationship.From, response.Resources) && managedReferenceInResources(relationship.To, response.Resources) {
+			response.Relationships = append(response.Relationships, relationship)
+		}
+	}
+	for _, finding := range snapshot.Findings {
+		if findingAllowed(principal, s.config.ClusterID, finding) {
+			response.Findings = append(response.Findings, finding)
+		}
+	}
+	// Discovery warnings are GVR-wide and may reveal cluster-scoped configuration,
+	// so namespace-scoped principals receive only resource-specific data.
+	writeJSON(w, http.StatusOK, response)
+}
+
+func managedReferenceInResources(reference managedresources.ResourceReference, resources []managedresources.Resource) bool {
+	for _, resource := range resources {
+		if reference.UID != "" && resource.UID != "" && reference.UID == resource.UID {
+			return true
+		}
+		if reference.Name != resource.Name || reference.Namespace != resource.Namespace {
+			continue
+		}
+		if reference.APIVersion != "" && reference.APIVersion != resource.APIVersion {
+			continue
+		}
+		if reference.Kind != "" && reference.Kind != resource.Kind {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func nonNilManagedResources(items []managedresources.Resource) []managedresources.Resource {
+	if items == nil {
+		return []managedresources.Resource{}
+	}
+	return items
+}
+
+func nonNilManagedRelationships(items []managedresources.Relationship) []managedresources.Relationship {
+	if items == nil {
+		return []managedresources.Relationship{}
+	}
+	return items
+}
+
+func nonNilManagedWarnings(items []managedresources.Warning) []managedresources.Warning {
+	if items == nil {
+		return []managedresources.Warning{}
+	}
+	return items
+}
+
+func nonNilFindings(items []core.Finding) []core.Finding {
+	if items == nil {
+		return []core.Finding{}
+	}
+	return items
+}
+
 func (s *Server) updateFindingStatus(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Status core.FindingStatus `json:"status"`
@@ -494,6 +625,8 @@ func (s *Server) previewRemediationPlan(w http.ResponseWriter, r *http.Request) 
 		writeError(w, status, err)
 		return
 	}
+	preview.Candidate = s.enrichPlanWithAI(r.Context(), finding, preview.Candidate)
+	preview.AI = preview.Candidate.AI
 	writeJSON(w, http.StatusOK, preview)
 }
 
@@ -528,6 +661,7 @@ func (s *Server) createRemediationPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := s.repository.CreateRemediationPlanFromFinding(r.Context(), finding, actorFromRequest(r), idempotencyKey)
 	if err != nil {
+		s.logger.Error("failed to create remediation plan", "request_id", w.Header().Get("X-Request-ID"), "finding_id", request.FindingID, "error", err)
 		status := http.StatusInternalServerError
 		if errors.Is(err, store.ErrNotFound) {
 			status = http.StatusNotFound
@@ -536,6 +670,14 @@ func (s *Server) createRemediationPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, status, err)
 		return
+	}
+	plan = s.enrichPlanWithAI(r.Context(), finding, plan)
+	if plan.AI != nil {
+		if err := s.repository.SyncRemediationPlan(r.Context(), plan); err != nil {
+			s.logger.Error("failed to persist AI-enriched remediation plan", "request_id", w.Header().Get("X-Request-ID"), "plan_id", plan.ID, "error", err)
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	if s.workflowClient == nil && !s.config.AllowMemoryWorkflows {
 		writeError(w, http.StatusServiceUnavailable, errors.New("Kubernetes workflow persistence is required"))
@@ -549,6 +691,19 @@ func (s *Server) createRemediationPlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusCreated, plan)
+}
+
+func (s *Server) enrichPlanWithAI(ctx context.Context, finding core.Finding, plan core.RemediationPlan) core.RemediationPlan {
+	if s.aiAdvisor == nil || plan.AI != nil {
+		return plan
+	}
+	analysis, err := s.aiAdvisor.Analyze(ctx, finding, plan)
+	if err != nil {
+		s.logger.Warn("ai decision support unavailable", "finding_id", finding.ID, "plan_id", plan.ID, "error", err)
+		return plan
+	}
+	plan.AI = &analysis
+	return plan
 }
 
 func (s *Server) getRemediationPlanDiff(w http.ResponseWriter, r *http.Request) {
@@ -1132,6 +1287,19 @@ func (s *Server) enrichDashboard(ctx context.Context, dashboard core.Dashboard) 
 			addFindingToDashboard(&dashboard, finding)
 		}
 	}
+	if workflow, ok := s.workflowClient.(approvalWorkflowClient); ok {
+		if approvals, err := workflow.ListApprovals(ctx); err == nil {
+			now := time.Now().UTC()
+			dashboard.PendingApprovals = 0
+			for _, approval := range approvals {
+				if approval.Status == core.ApprovalPending && approval.ExpiresAt.After(now) {
+					dashboard.PendingApprovals++
+				}
+			}
+		} else {
+			s.logger.Warn("live approval dashboard count unavailable", "error", err)
+		}
+	}
 	return dashboard
 }
 
@@ -1209,7 +1377,11 @@ func (s *Server) snapshot(ctx context.Context) (core.ClusterSnapshot, bool) {
 		return core.ClusterSnapshot{}, false
 	}
 	snapshot, err := s.clusterInspector.Snapshot(ctx)
-	return snapshot, err == nil
+	if err != nil {
+		s.logger.Warn("cluster inventory snapshot unavailable", "error", err)
+		return core.ClusterSnapshot{}, false
+	}
+	return snapshot, true
 }
 
 func addFindingToDashboard(dashboard *core.Dashboard, finding core.Finding) {
@@ -1220,9 +1392,6 @@ func addFindingToDashboard(dashboard *core.Dashboard, finding core.Finding) {
 	dashboard.RemediationByState[finding.RemediationState]++
 	if finding.Severity == core.SeverityCritical && finding.Status != core.FindingResolved && finding.Status != core.FindingSuppressed {
 		dashboard.OpenCritical++
-	}
-	if finding.RemediationState == "approval_required" {
-		dashboard.PendingApprovals++
 	}
 	if finding.Status == core.FindingRemediating {
 		dashboard.ActiveRemediations++
@@ -1622,6 +1791,13 @@ func (s *Server) getFindingByID(ctx context.Context, id string) (core.Finding, e
 	}
 	if liveFinding, ok := s.findLiveFinding(ctx, id); ok {
 		return liveFinding, nil
+	}
+	if s.adapterManager != nil {
+		for _, adapterFinding := range s.adapterManager.Collect(ctx).Findings {
+			if adapterFinding.ID == id {
+				return adapterFinding, nil
+			}
+		}
 	}
 	return core.Finding{}, store.ErrNotFound
 }

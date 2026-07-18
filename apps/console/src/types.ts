@@ -168,6 +168,20 @@ export interface TypedAction {
   params?: Record<string, string>;
 }
 
+export interface AIAnalysis {
+  provider: string;
+  model: string;
+  mode: string;
+  summary: string;
+  rootCause: string;
+  impact: string;
+  recommendedAction: string;
+  confidence: string;
+  safetyNotes: string[];
+  autonomousPolicy: string;
+  generatedAt: string;
+}
+
 export interface RemediationPlan {
   id: string;
   catalogVersion: string;
@@ -186,6 +200,7 @@ export interface RemediationPlan {
     decision?: "pending" | "approved" | "rejected" | "expired";
     categories?: string[];
   };
+  ai?: AIAnalysis;
   status: string;
   createdAt: string;
 }
@@ -204,6 +219,7 @@ export interface RemediationPreview {
   evidenceCitations: EvidenceCitation[];
   promptEvidenceHash: string;
   deterministicFallback: boolean;
+  ai?: AIAnalysis;
   safetyNotes: string[];
   generatedAt: string;
 }
@@ -294,6 +310,84 @@ export interface IntegrationHealth {
   errorState?: string;
   findingsCount: number;
   checkedAt: string;
+}
+
+export type ManagedResourceManagementSystem = "argocd" | "flux" | "helm" | "crossplane" | "operator" | "unknown";
+
+export interface ManagedResourceProvenance {
+  system: ManagedResourceManagementSystem;
+  controller?: string;
+  sourceRef?: string;
+  gitOps: boolean;
+  signals?: string[];
+}
+
+export interface ManagedResourceReference {
+  apiVersion?: string;
+  kind?: string;
+  namespace?: string;
+  name: string;
+  uid?: string;
+}
+
+export interface ManagedResourceRelationship {
+  from: ManagedResourceReference;
+  to: ManagedResourceReference;
+  type: "owned_by" | "references" | "claimed_by";
+  path?: string;
+}
+
+export interface ManagedResourceCondition {
+  type: string;
+  status: string;
+  reason?: string;
+  observedGeneration?: number;
+  lastTransitionTime?: string;
+}
+
+export interface ManagedResourceStatus {
+  ready?: boolean;
+  synced?: boolean;
+  stalled?: boolean;
+  state?: string;
+  observedGeneration?: number;
+  conditions?: ManagedResourceCondition[];
+}
+
+export interface ManagedResource {
+  id: string;
+  apiGroup: string;
+  version: string;
+  plural: string;
+  apiVersion: string;
+  kind: string;
+  namespace?: string;
+  name: string;
+  uid?: string;
+  generation?: number;
+  createdAt?: string;
+  deletionTimestamp?: string;
+  finalizers?: string[];
+  externalId?: string;
+  status: ManagedResourceStatus;
+  provenance: ManagedResourceProvenance;
+}
+
+export interface ManagedResourceWarning {
+  apiGroup: string;
+  version: string;
+  resource: string;
+  code: string;
+  message: string;
+}
+
+export interface ManagedResourceSnapshot {
+  enabled: boolean;
+  observedAt?: string;
+  resources: ManagedResource[];
+  relationships: ManagedResourceRelationship[];
+  findings: Finding[];
+  warnings: ManagedResourceWarning[];
 }
 
 export interface ModelProviderSettings {

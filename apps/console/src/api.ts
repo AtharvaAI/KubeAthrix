@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AuditEvent, ChaosExperiment, ChaosExperimentRun, Dashboard, EvidenceBundle, Finding, FindingException, FindingStatus, Integration, IntegrationHealth, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationPreview, RemediationRun } from "./types";
+import type { ApprovalRequest, AuditEvent, ChaosExperiment, ChaosExperimentRun, Dashboard, EvidenceBundle, Finding, FindingException, FindingStatus, Integration, IntegrationHealth, ManagedResourceSnapshot, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationPreview, RemediationRun } from "./types";
 import { accessToken } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -125,6 +125,10 @@ export async function loadIntegrations(): Promise<Integration[]> {
 
 export async function loadIntegrationHealth(name: string): Promise<IntegrationHealth> {
   return request<IntegrationHealth>(`/integrations/${encodeURIComponent(name)}/health`);
+}
+
+export async function loadManagedResources(): Promise<ManagedResourceSnapshot> {
+  return request<ManagedResourceSnapshot>("/managed-resources");
 }
 
 export async function loadEvidenceBundle(scope: string): Promise<EvidenceBundle> {

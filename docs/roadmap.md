@@ -12,8 +12,8 @@
 
 ## Next
 
-- A separately reviewed model gateway. Until then provider records are
-  inventory-only and planning is deterministic.
+- Model gateway evaluations, cost controls, provider-specific conformance tests,
+  and richer AI-assisted triage workflows.
 - GitOps proposal export and real Falco/Tetragon runtime adapters.
 - More upgrade/e2e environments and performance testing at large cluster scale.
 

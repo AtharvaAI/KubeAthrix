@@ -16,17 +16,17 @@ rollout:
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "api-0.2.0" # x-release-please-version
+    tag: "api-0.2.6" # x-release-please-version
     digest: ""
     pullPolicy: IfNotPresent
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "console-0.2.0" # x-release-please-version
+    tag: "console-0.2.4" # x-release-please-version
     digest: ""
     pullPolicy: IfNotPresent
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "operator-0.2.0" # x-release-please-version
+    tag: "operator-0.2.3" # x-release-please-version
     digest: ""
     pullPolicy: IfNotPresent
 
@@ -48,6 +48,21 @@ api:
     enabled: true
   adapters:
     enabled: true
+  managedExternalResources:
+    # Opt in only when Kubernetes custom resources are the authoritative
+    # management surface for external resources. This never enables direct
+    # cloud-provider API access.
+    enabled: false
+    # Every entry must name an exact non-core API group, version, and one or
+    # more resource plurals. Wildcards are rejected during Helm rendering.
+    # `namespaced` describes the CRD scope for discovery and authorization;
+    # the generated ClusterRole remains read-only in either case.
+    allowlist: []
+    # - apiGroup: example.platform.io
+    #   version: v1alpha1
+    #   resources:
+    #     - managedresources
+    #   namespaced: true
   riskConfig:
     criticalBase: 90
     highBase: 72
@@ -120,6 +135,38 @@ postgres:
 
 modelProviders: []
 
+ai:
+  enabled: false
+  provider: openai-compatible
+  endpoint: https://api.openai.com/v1/chat/completions
+  # HTTPS is required by default. Enable insecure HTTP only for an isolated
+  # local test endpoint.
+  allowInsecureHTTP: false
+  # Optional exact DNS hostname allowlist for the provider endpoint. An empty
+  # list permits the configured HTTPS hostname.
+  endpointHostAllowlist: []
+  # Findings matching either list are not sent to the model provider.
+  excludedSources: []
+  excludedNamespaces: []
+  model: ""
+  timeout: 20s
+  maxInputBytes: 65536
+  maxOutputTokens: 700
+  circuitBreakerThreshold: 3
+  circuitBreakerCooldown: 30s
+  existingSecret: ""
+  apiKeyKey: api-key
+  agent:
+    enabled: false
+    interval: 1m
+    minRiskScore: 60
+    maxFindingsPerCycle: 10
+    autoPlan: true
+    # Requests execution only for non-approval Tier A typed actions. The
+    # operator still performs server-side dry-run and honors remediation.mutationEnabled.
+    autoExecuteTierA: false
+    notificationTimeout: 5s
+
 remediation:
   mutationEnabled: false
   mode: proposal-only
@@ -164,6 +211,9 @@ kyverno:
 notifications:
   webhooks:
     enabled: false
+    url: ""
+    existingSecret: ""
+    urlKey: url
   alertmanager:
     enabled: false
     url: ""

@@ -13,6 +13,21 @@
 {{- if and .Values.chaos.execution.enabled (not .Values.engines.chaosMesh.enabled) -}}
 {{- fail "engines.chaosMesh.enabled must be true when chaos execution is enabled; install a compatible Chaos Mesh control plane first" -}}
 {{- end -}}
+{{- include "kubeathrix.validateManagedExternalResources" . -}}
+{{- $ai := .Values.ai | default dict -}}
+{{- $agent := $ai.agent | default dict -}}
+{{- $notifications := .Values.notifications | default dict -}}
+{{- $webhooks := $notifications.webhooks | default dict -}}
+{{- $managedExternalResources := .Values.api.managedExternalResources | default dict -}}
+{{- if and (default false $agent.enabled) (not (default false $ai.enabled)) -}}
+{{- fail "ai.agent.enabled requires ai.enabled=true" -}}
+{{- end -}}
+{{- if and (default false $agent.enabled) (or (empty $ai.model) (empty $ai.existingSecret)) -}}
+{{- fail "ai.agent.enabled requires ai.model and ai.existingSecret with the OpenAI API key" -}}
+{{- end -}}
+{{- if and (default false $ai.enabled) (hasPrefix "http://" (lower (default "https://api.openai.com/v1/chat/completions" $ai.endpoint))) (not (default false $ai.allowInsecureHTTP)) -}}
+{{- fail "ai.endpoint must use HTTPS unless ai.allowInsecureHTTP=true for isolated local testing" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -101,6 +116,67 @@ spec:
               value: {{ .Values.api.clusterInspector.enabled | quote }}
             - name: KUBEATHRIX_ADAPTERS_ENABLED
               value: {{ .Values.api.adapters.enabled | quote }}
+            - name: KUBEATHRIX_MANAGED_EXTERNAL_RESOURCES_ENABLED
+              value: {{ default false $managedExternalResources.enabled | quote }}
+            - name: KUBEATHRIX_MANAGED_EXTERNAL_RESOURCES_JSON
+              value: {{ toJson $managedExternalResources | quote }}
+            - name: KUBEATHRIX_AI_ENABLED
+              value: {{ default false $ai.enabled | quote }}
+            - name: KUBEATHRIX_AI_PROVIDER
+              value: {{ default "openai-compatible" $ai.provider | quote }}
+            - name: KUBEATHRIX_AI_ENDPOINT
+              value: {{ default "https://api.openai.com/v1/chat/completions" $ai.endpoint | quote }}
+            - name: KUBEATHRIX_AI_MODEL
+              value: {{ default "" $ai.model | quote }}
+            - name: KUBEATHRIX_AI_TIMEOUT
+              value: {{ default "20s" $ai.timeout | quote }}
+            - name: KUBEATHRIX_AI_ALLOW_INSECURE_HTTP
+              value: {{ default false $ai.allowInsecureHTTP | quote }}
+            - name: KUBEATHRIX_AI_ENDPOINT_HOST_ALLOWLIST
+              value: {{ join "," ($ai.endpointHostAllowlist | default (list)) | quote }}
+            - name: KUBEATHRIX_AI_EXCLUDED_SOURCES
+              value: {{ join "," ($ai.excludedSources | default (list)) | quote }}
+            - name: KUBEATHRIX_AI_EXCLUDED_NAMESPACES
+              value: {{ join "," ($ai.excludedNamespaces | default (list)) | quote }}
+            - name: KUBEATHRIX_AI_MAX_INPUT_BYTES
+              value: {{ default 65536 $ai.maxInputBytes | quote }}
+            - name: KUBEATHRIX_AI_MAX_OUTPUT_TOKENS
+              value: {{ default 700 $ai.maxOutputTokens | quote }}
+            - name: KUBEATHRIX_AI_CIRCUIT_BREAKER_THRESHOLD
+              value: {{ default 3 $ai.circuitBreakerThreshold | quote }}
+            - name: KUBEATHRIX_AI_CIRCUIT_BREAKER_COOLDOWN
+              value: {{ default "30s" $ai.circuitBreakerCooldown | quote }}
+            {{- if $ai.existingSecret }}
+            - name: KUBEATHRIX_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ai.existingSecret | quote }}
+                  key: {{ default "api-key" $ai.apiKeyKey | quote }}
+            {{- end }}
+            - name: KUBEATHRIX_AI_AGENT_ENABLED
+              value: {{ default false $agent.enabled | quote }}
+            - name: KUBEATHRIX_AI_AGENT_INTERVAL
+              value: {{ default "1m" $agent.interval | quote }}
+            - name: KUBEATHRIX_AI_AGENT_MIN_RISK_SCORE
+              value: {{ default 60 $agent.minRiskScore | quote }}
+            - name: KUBEATHRIX_AI_AGENT_MAX_FINDINGS_PER_CYCLE
+              value: {{ default 10 $agent.maxFindingsPerCycle | quote }}
+            - name: KUBEATHRIX_AI_AGENT_AUTO_PLAN
+              value: {{ default true $agent.autoPlan | quote }}
+            - name: KUBEATHRIX_AI_AGENT_AUTO_EXECUTE_TIER_A
+              value: {{ default false $agent.autoExecuteTierA | quote }}
+            - name: KUBEATHRIX_AI_AGENT_NOTIFICATION_TIMEOUT
+              value: {{ default "5s" $agent.notificationTimeout | quote }}
+            {{- if and (default false $webhooks.enabled) $webhooks.existingSecret }}
+            - name: KUBEATHRIX_NOTIFICATION_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $webhooks.existingSecret | quote }}
+                  key: {{ default "url" $webhooks.urlKey | quote }}
+            {{- else }}
+            - name: KUBEATHRIX_NOTIFICATION_WEBHOOK_URL
+              value: {{ default "" $webhooks.url | quote }}
+            {{- end }}
             - name: KUBEATHRIX_CHAOS_EXECUTION
               value: {{ .Values.chaos.execution.enabled | quote }}
             - name: KUBEATHRIX_CHAOS_NAMESPACE_ALLOWLIST

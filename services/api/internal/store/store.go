@@ -41,6 +41,7 @@ type Repository interface {
 	CreateRemediationPlan(ctx context.Context, findingID, requester string, idempotencyKey ...string) (core.RemediationPlan, error)
 	CreateRemediationPlanFromFinding(ctx context.Context, finding core.Finding, requester string, idempotencyKey ...string) (core.RemediationPlan, error)
 	GetRemediationPlan(ctx context.Context, id string) (core.RemediationPlan, error)
+	SyncRemediationPlan(ctx context.Context, plan core.RemediationPlan) error
 	GetRemediationPlanDiff(ctx context.Context, id string) (core.RemediationDiff, error)
 	ExecuteRemediationPlan(ctx context.Context, id, actor string) (core.RemediationRun, error)
 	RequestRollback(ctx context.Context, runID, actor string) (core.RemediationRun, error)
@@ -165,9 +166,6 @@ func (s *MemoryStore) Dashboard(ctx context.Context) (core.Dashboard, error) {
 		if finding.Severity == core.SeverityCritical && finding.Status != core.FindingResolved && finding.Status != core.FindingSuppressed {
 			dashboard.OpenCritical++
 		}
-		if finding.RemediationState == "approval_required" {
-			dashboard.PendingApprovals++
-		}
 		if finding.Status == core.FindingRemediating {
 			dashboard.ActiveRemediations++
 		}
@@ -186,6 +184,11 @@ func (s *MemoryStore) Dashboard(ctx context.Context) (core.Dashboard, error) {
 	for _, run := range s.runs {
 		if run.State == core.RunSucceeded {
 			dashboard.VerifiedRemediations++
+		}
+	}
+	for _, approval := range s.approvals {
+		if approval.Status == core.ApprovalPending && approval.ExpiresAt.After(s.clock().UTC()) {
+			dashboard.PendingApprovals++
 		}
 	}
 	if dashboard.TotalFindings > 0 {
@@ -391,6 +394,22 @@ func (s *MemoryStore) GetRemediationPlan(ctx context.Context, id string) (core.R
 		return core.RemediationPlan{}, ErrNotFound
 	}
 	return plan, nil
+}
+
+func (s *MemoryStore) SyncRemediationPlan(ctx context.Context, plan core.RemediationPlan) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if plan.ID == "" || plan.FindingID == "" {
+		return fmt.Errorf("%w: plan id and finding id are required", ErrInvalid)
+	}
+	if _, ok := s.plans[plan.ID]; !ok {
+		return ErrNotFound
+	}
+	s.plans[plan.ID] = plan
+	return nil
 }
 
 func (s *MemoryStore) GetRemediationPlanDiff(ctx context.Context, id string) (core.RemediationDiff, error) {
@@ -1036,6 +1055,22 @@ func typedActionsForFinding(finding core.Finding) []core.TypedAction {
 	}
 	actions := []core.TypedAction{}
 	text := strings.ToLower(finding.ID + " " + finding.Title + " " + finding.BlastRadius + " " + finding.RecommendedAction)
+	if strings.HasPrefix(strings.ToLower(finding.Source), "managed-resource") || strings.Contains(text, "kubernetes-managed external resource") {
+		managementSystem := strings.TrimPrefix(finding.CorrelationKeys.Identity, "managed-resource:")
+		if managementSystem == "" {
+			managementSystem = "unknown"
+		}
+		return []core.TypedAction{{
+			Type:        actioncatalog.ManagedResourceReviewAction,
+			Target:      target,
+			Description: "Review the managed-resource flaw and its authoritative source; an exact change requires a separate trusted proposal",
+			Params: map[string]string{
+				"findingId":        finding.ID,
+				"managementSystem": managementSystem,
+				"sourceOfTruth":    "owning Kubernetes controller resource or upstream GitOps repository",
+			},
+		}}
+	}
 
 	if strings.Contains(text, "resourcequota") || strings.Contains(text, "limitrange") || strings.Contains(text, "resource governance") || strings.Contains(text, "resources") {
 		actions = append(actions, core.TypedAction{

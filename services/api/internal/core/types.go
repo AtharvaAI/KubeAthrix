@@ -293,8 +293,23 @@ type RemediationPlan struct {
 	VerificationSteps []string       `json:"verificationSteps"`
 	RollbackSteps     []string       `json:"rollbackSteps"`
 	ApprovalPolicy    ApprovalPolicy `json:"approvalPolicy"`
+	AI                *AIAnalysis    `json:"ai,omitempty"`
 	Status            string         `json:"status"`
 	CreatedAt         time.Time      `json:"createdAt"`
+}
+
+type AIAnalysis struct {
+	Provider          string    `json:"provider"`
+	Model             string    `json:"model"`
+	Mode              string    `json:"mode"`
+	Summary           string    `json:"summary"`
+	RootCause         string    `json:"rootCause"`
+	Impact            string    `json:"impact"`
+	RecommendedAction string    `json:"recommendedAction"`
+	Confidence        string    `json:"confidence"`
+	SafetyNotes       []string  `json:"safetyNotes"`
+	AutonomousPolicy  string    `json:"autonomousPolicy"`
+	GeneratedAt       time.Time `json:"generatedAt"`
 }
 
 type EvidenceCitation struct {
@@ -311,6 +326,7 @@ type RemediationPreview struct {
 	EvidenceCitations     []EvidenceCitation `json:"evidenceCitations"`
 	PromptEvidenceHash    string             `json:"promptEvidenceHash"`
 	DeterministicFallback bool               `json:"deterministicFallback"`
+	AI                    *AIAnalysis        `json:"ai,omitempty"`
 	SafetyNotes           []string           `json:"safetyNotes"`
 	GeneratedAt           time.Time          `json:"generatedAt"`
 }

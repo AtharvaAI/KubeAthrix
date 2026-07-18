@@ -7,12 +7,14 @@ KubeAthrix uses Release Please to keep release versioning automatic and consiste
 - Commit messages follow Conventional Commits.
 - Release Please reads commits merged to `main`.
 - It opens or updates a release PR with the next SemVer version and changelog.
-- Merging that release PR updates the version and changelog but does not create
-  a tag or GitHub Release.
-- A maintainer then runs `Publish Verified Release` for that exact version. The
-  workflow reruns every required gate, publishes and signs immutable images and
-  the OCI chart, and creates the Git tag and GitHub Release only as its final
-  successful step.
+- Merging that release PR updates the version and changelog, creates the Git tag
+  and GitHub Release, and directly starts `Publish Verified Release`.
+- The publish workflow reads the version from `package.json`, requires the
+  generated release tag to match it, reruns every required gate, and publishes
+  and signs immutable images and the OCI chart.
+- A maintainer can also manually run `Publish Verified Release` as an atomic
+  release or recovery path. Manual runs derive the version from `package.json`
+  and create the Git tag and GitHub Release only after publication succeeds.
 
 Version impact:
 
@@ -37,9 +39,12 @@ Configure these repository secrets before publishing images:
 ## Workflows
 
 - `CI`: runs tests, console build, Helm lint/template, and Docker build smoke checks.
-- `Release Please`: creates and updates release PRs only.
-- `Publish Verified Release`: is manually dispatched after the release PR is
-  merged; it verifies, publishes, signs, and finally creates the GitHub Release.
+- `Release Please`: creates and updates release PRs, then creates the GitHub
+  Release and invokes the image publisher when its release PR is merged.
+- `Publish Verified Release`: runs automatically when a GitHub Release is
+  published, or can be manually dispatched after the release PR is merged. It
+  derives all image tags from the source version, verifies, publishes, signs,
+  and attaches the release artifacts.
 
 ## Image Tags
 
@@ -48,7 +53,7 @@ For release `v0.2.0`, the publish workflow pushes:
 
 ```text
 docker.io/prashantdey/kubeathrix:api-0.2.0
-docker.io/prashantdey/kubeathrix:api-0.1
+docker.io/prashantdey/kubeathrix:api-0.2
 docker.io/prashantdey/kubeathrix:api-0
 docker.io/prashantdey/kubeathrix:api-latest
 docker.io/prashantdey/kubeathrix:api-sha-<short_sha>
@@ -61,19 +66,20 @@ Prereleases do not receive `*-latest`, major, or minor rolling tags.
 
 ## Publish A Verified Release
 
-After the release PR is merged:
+To publish a release:
 
-1. Open GitHub Actions.
-2. Run `Publish Verified Release` from the release commit on `main`.
-<!-- x-release-please-start-version -->
-3. Enter the release version, for example `0.2.0`.
-<!-- x-release-please-end -->
-4. Leave `push_latest` enabled only for stable releases.
+1. Merge conventional commits into `main`.
+2. Review and merge the `Release Please` pull request. GitHub then creates the
+   version tag and Release and directly runs the verified Docker Hub publisher.
+   Stable releases automatically advance the rolling image tags.
+3. For recovery, open GitHub Actions and manually run
+   `Publish Verified Release` from the release commit on `main`. The version is
+   read automatically from `package.json`; leave `push_latest` enabled only for
+   stable releases.
 
-The workflow rejects a version that differs from the source manifests and
-refuses to replace an existing GitHub Release. If any verification, scan,
-signature, image publication, or chart publication step fails, no GitHub
-Release is created. Recover a partial registry publication by fixing the cause
-and deliberately rerunning the same workflow before a GitHub Release exists.
+The workflow rejects a release tag that differs from the source version. If a
+manual run fails during verification, scanning, signing, image publication, or
+chart publication, no GitHub Release is created. Recover a partial registry
+publication by fixing the cause and deliberately rerunning the same workflow.
 
 Do not hand-edit chart image tags or docs after a release. Let Release Please update them in the release PR.

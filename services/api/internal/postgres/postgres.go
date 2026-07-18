@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -201,6 +202,10 @@ func (s *Store) Dashboard(ctx context.Context) (core.Dashboard, error) {
 	if err != nil {
 		return core.Dashboard{}, err
 	}
+	pendingApprovals, err := s.countPendingApprovals(ctx)
+	if err != nil {
+		return core.Dashboard{}, err
+	}
 	dashboard := core.Dashboard{
 		FindingsBySeverity:  map[string]int{},
 		FindingsBySource:    map[string]int{},
@@ -223,9 +228,6 @@ func (s *Store) Dashboard(ctx context.Context) (core.Dashboard, error) {
 		dashboard.RemediationByState[finding.RemediationState]++
 		if finding.Severity == core.SeverityCritical && finding.Status != core.FindingResolved && finding.Status != core.FindingSuppressed {
 			dashboard.OpenCritical++
-		}
-		if finding.RemediationState == "approval_required" {
-			dashboard.PendingApprovals++
 		}
 		if finding.Status == core.FindingRemediating {
 			dashboard.ActiveRemediations++
@@ -250,6 +252,7 @@ func (s *Store) Dashboard(ctx context.Context) (core.Dashboard, error) {
 			dashboard.VerifiedRemediations++
 		}
 	}
+	dashboard.PendingApprovals = pendingApprovals
 	if dashboard.TotalFindings > 0 {
 		dashboard.MeanRiskScore = float64(scoreTotal) / float64(dashboard.TotalFindings)
 	}
@@ -258,6 +261,12 @@ func (s *Store) Dashboard(ctx context.Context) (core.Dashboard, error) {
 		dashboard.ProtectedNamespaces = len(namespaces)
 	}
 	return dashboard, nil
+}
+
+func (s *Store) countPendingApprovals(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM kubeathrix_approval_requests WHERE payload->>'status' = 'pending' AND (expires_at IS NULL OR expires_at > now())`).Scan(&count)
+	return count, err
 }
 
 func (s *Store) ListFindings(ctx context.Context, filter store.FindingFilter) ([]core.Finding, error) {
@@ -403,7 +412,7 @@ func (s *Store) createRemediationPlanIdempotent(ctx context.Context, finding cor
 		return core.RemediationPlan{}, err
 	}
 	defer tx.Rollback()
-	lockKey := requester + "\x00" + key
+	lockKey := idempotencyAdvisoryLockKey(requester, key)
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
 		return core.RemediationPlan{}, err
 	}
@@ -481,6 +490,11 @@ func (s *Store) createRemediationPlanIdempotent(ctx context.Context, finding cor
 	return plan, nil
 }
 
+func idempotencyAdvisoryLockKey(requester, key string) string {
+	digest := sha256.Sum256([]byte(requester + "\x00" + key))
+	return fmt.Sprintf("remediation-plan:%x", digest)
+}
+
 func (s *Store) GetRemediationPlan(ctx context.Context, id string) (core.RemediationPlan, error) {
 	var plan core.RemediationPlan
 	err := s.queryJSON(ctx, `SELECT payload FROM kubeathrix_remediation_plans WHERE id = $1`, []any{id}, &plan)
@@ -491,6 +505,16 @@ func (s *Store) GetRemediationPlan(ctx context.Context, id string) (core.Remedia
 		return core.RemediationPlan{}, err
 	}
 	return s.delegate.GetRemediationPlan(ctx, id)
+}
+
+func (s *Store) SyncRemediationPlan(ctx context.Context, plan core.RemediationPlan) error {
+	if plan.ID == "" || plan.FindingID == "" {
+		return fmt.Errorf("%w: plan id and finding id are required", store.ErrInvalid)
+	}
+	if _, err := s.GetRemediationPlan(ctx, plan.ID); err != nil {
+		return err
+	}
+	return s.savePlan(ctx, plan)
 }
 
 func (s *Store) GetRemediationPlanDiff(ctx context.Context, id string) (core.RemediationDiff, error) {

@@ -1,11 +1,21 @@
 name: Publish Verified Release
 
 on:
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      release_tag:
+        description: "Release tag created by Release Please"
+        required: true
+        type: string
+      push_latest:
+        description: "Also publish component-latest tags"
+        required: false
+        default: true
+        type: boolean
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version to publish, for example 0.1.0 or v0.1.0"
-        required: true
       push_latest:
         description: "Also publish component-latest tags"
         required: true
@@ -21,10 +31,16 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: prashantdey/kubeathrix
 
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Verify before publishing
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     services:
       postgres:
         image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
@@ -45,13 +61,27 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { fetch-depth: 0 }
 
-      - name: Validate requested version
+      - name: Resolve and validate release version
+        id: version
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || '' }}
         run: |
-          RAW_VERSION="${{ inputs.version }}"
-          VERSION="${RAW_VERSION#v}"
-          CODE_VERSION=$(node -p "require('./package.json').version")
-          test "$VERSION" = "$CODE_VERSION" || { echo "Requested $VERSION but source is $CODE_VERSION" >&2; exit 1; }
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid package version: $VERSION" >&2
+            exit 1
+          fi
+
+          if [[ -n "$RELEASE_TAG" ]]; then
+            RELEASE_VERSION="${RELEASE_TAG#v}"
+            test "$RELEASE_VERSION" = "$VERSION" || {
+              echo "Release tag $RELEASE_TAG does not match package version $VERSION" >&2
+              exit 1
+            }
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -146,12 +176,6 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Resolve version
-        id: version
-        shell: bash
-        run: |
-          RAW_VERSION="${{ inputs.version }}"
-          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -159,7 +183,7 @@ jobs:
           load: true
           tags: kubeathrix/${{ matrix.component }}:release-candidate
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
+            VERSION=${{ needs.verify.outputs.version }}
             REVISION=${{ github.sha }}
       - uses: anchore/sbom-action@df80a981bc6edbc4e220a492d3cbe9f5547a6e75 # v0.17.9
         with:
@@ -252,14 +276,17 @@ jobs:
       - name: Resolve release version
         id: version
         shell: bash
+        env:
+          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease || false }}
         run: |
-          RAW_VERSION="${{ inputs.version }}"
-          PUSH_LATEST="${{ inputs.push_latest }}"
-
-          VERSION="${RAW_VERSION#v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid version: $RAW_VERSION" >&2
-            exit 1
+          VERSION="${{ needs.verify.outputs.version }}"
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            PUSH_LATEST="true"
+            if [[ "$RELEASE_IS_PRERELEASE" == "true" ]]; then
+              PUSH_LATEST="false"
+            fi
+          else
+            PUSH_LATEST="${{ inputs.push_latest }}"
           fi
 
           IFS='.' read -r MAJOR MINOR PATCH_EXTRA <<< "$VERSION"
@@ -337,7 +364,7 @@ jobs:
   chart:
     name: Publish digest-pinned OCI chart
     runs-on: ubuntu-latest
-    needs: publish
+    needs: [verify, publish]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -352,8 +379,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          RAW_VERSION="${{ inputs.version }}"
-          VERSION="${RAW_VERSION#v}"
+          VERSION="${{ needs.verify.outputs.version }}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           API_DIGEST=$(tr -d '\r\n' < digests/api)
           CONSOLE_DIGEST=$(tr -d '\r\n' < digests/console)
@@ -377,6 +403,7 @@ jobs:
           name: kubeathrix-release-artifacts
           path: dist/
       - name: Create GitHub release after verified publication
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -392,3 +419,9 @@ jobs:
             PRERELEASE_ARGS+=(--prerelease)
           fi
           gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "KubeAthrix $TAG" --generate-notes "${PRERELEASE_ARGS[@]}"
+      - name: Attach artifacts to published GitHub release
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber

@@ -131,7 +131,32 @@ function planPayload() {
   };
 }
 
-function mockApi(modelSettingsAllowed = true) {
+function managedResourcePayload() {
+  return {
+    enabled: true,
+    observedAt: "2026-07-08T12:00:00Z",
+    resources: [{
+      id: "iam.aws.example.io/v1beta1/roles/payments/checkout-role",
+      apiGroup: "iam.aws.example.io",
+      version: "v1beta1",
+      plural: "roles",
+      apiVersion: "iam.aws.example.io/v1beta1",
+      kind: "Role",
+      namespace: "payments",
+      name: "checkout-role",
+      uid: "role-uid",
+      generation: 4,
+      externalId: "arn:aws:iam::123456789012:role/checkout-role",
+      status: { ready: true, synced: true, stalled: false, state: "Ready", observedGeneration: 4 },
+      provenance: { system: "argocd", controller: "argocd-application-controller", sourceRef: "platform/iam/checkout-role.yaml", gitOps: true, signals: ["argocd tracking label"] }
+    }],
+    relationships: [],
+    findings: [],
+    warnings: []
+  };
+}
+
+function mockApi(modelSettingsAllowed = true, managedResourcesAllowed = true) {
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -148,6 +173,10 @@ function mockApi(modelSettingsAllowed = true) {
       if (url.endsWith("/api/integrations/Kyverno/health")) {
         return Promise.resolve(Response.json({ name: "Kyverno", type: "policy", enabled: true, status: "configured", health: "healthy", dataLastSeen: "2026-07-08T12:00:00Z", permissions: ["Read policyreports"], setupGaps: [], checkedAt: "2026-07-08T12:00:00Z" }));
       }
+      if (url.endsWith("/api/managed-resources")) {
+        if (!managedResourcesAllowed) return Promise.resolve(Response.json({ error: { code: "permission_denied", message: "cluster scope required" } }, { status: 403 }));
+        return Promise.resolve(Response.json(managedResourcePayload()));
+      }
       if (url.endsWith("/api/settings/model-providers")) {
         if (!modelSettingsAllowed) return Promise.resolve(Response.json({ error: { code: "permission_denied", message: "insufficient permissions" } }, { status: 403 }));
         return Promise.resolve(Response.json({ providers: [{ name: "primary", type: "openai-compatible", model: "gpt-5", apiKeySecretRef: { name: "kubeathrix-llm", key: "api-key" } }] }));
@@ -155,6 +184,21 @@ function mockApi(modelSettingsAllowed = true) {
 	  if (url.endsWith("/api/experiments")) return Promise.resolve(Response.json({ items: dashboardPayload().experiments }));
 	  if (url.endsWith("/api/experiment-runs")) return Promise.resolve(Response.json({ items: [] }));
       if (url.endsWith("/api/remediation-plans") && method === "POST") return Promise.resolve(Response.json(planPayload(), { status: 201 }));
+      if (url.endsWith("/api/approvals/approval-plan-finding-public-rbac-image-001/approve") && method === "POST") {
+        return Promise.resolve(Response.json({ id: "approval-plan-finding-public-rbac-image-001", subjectRef: "plan-finding-public-rbac-image-001", status: "approved" }));
+      }
+      if (url.endsWith("/api/remediation-plans/plan-finding-public-rbac-image-001/execute") && method === "POST") {
+        return Promise.resolve(Response.json({
+          id: "run-plan-finding-public-rbac-image-001",
+          planId: "plan-finding-public-rbac-image-001",
+          state: "execution_requested",
+          actionStatuses: [],
+          validationResult: "execution request persisted",
+          rollbackMetadata: "no snapshot yet",
+          createdAt: "2026-07-08T12:00:00Z",
+          updatedAt: "2026-07-08T12:00:00Z"
+        }, { status: 202 }));
+      }
       if (url.endsWith("/api/remediation-plans/plan-finding-public-rbac-image-001/diff")) {
         return Promise.resolve(Response.json({ planId: "plan-finding-public-rbac-image-001", mode: "typed-server-side-dry-run", summary: "1 typed action prepared.", manifests: [{ actionType: "propose_security_hardening", target: finding.resources[0], writeMode: "gitops-proposal", diff: "Prepare network policy proposal.", manifest: "" }] }));
       }
@@ -189,11 +233,55 @@ describe("KubeAthrix console", () => {
 	expect(await screen.findByText("Approval required")).toBeInTheDocument();
   });
 
+  it("shows approved and execution-requested plan states instead of pending approval", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /Findings/i }));
+    await user.click(await screen.findByRole("button", { name: /Generate typed plan/i }));
+    await screen.findByText("Approval required");
+
+    await user.type(screen.getByLabelText(/Approval decision reason/i), "reviewed");
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText("Approved; not executed")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Execute" }));
+
+    expect(await screen.findByText("Execution requested")).toBeInTheDocument();
+  });
+
   it("keeps viewer data usable when administrator-only settings are denied", async () => {
     mockApi(false);
     render(<App />);
 
     expect(await screen.findByText("Correlated cluster risk")).toBeInTheDocument();
+    expect(screen.queryByText("API unavailable")).not.toBeInTheDocument();
+  });
+
+  it("shows managed resources as read-only source-of-truth inventory", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /Managed resources/i }));
+
+    expect(await screen.findByText("Role/checkout-role")).toBeInTheDocument();
+    expect(screen.getByText("platform/iam/checkout-role.yaml")).toBeInTheDocument();
+    expect(screen.getByText("GitOps")).toBeInTheDocument();
+    expect(screen.getByText(/every managed-resource change remains human-reviewed and proposal-only/i)).toBeInTheDocument();
+  });
+
+  it("keeps the console usable when managed-resource inventory is forbidden", async () => {
+    mockApi(true, false);
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("Correlated cluster risk")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Managed resources/i }));
+
+    expect(await screen.findByText("Managed-resource inventory is not available to this identity")).toBeInTheDocument();
     expect(screen.queryByText("API unavailable")).not.toBeInTheDocument();
   });
 });

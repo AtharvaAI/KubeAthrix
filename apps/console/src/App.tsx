@@ -43,6 +43,7 @@ import {
   loadFindingExceptions,
   loadIntegrationHealth,
   loadIntegrations,
+  loadManagedResources,
   loadModelProviders,
   loadRemediationRun,
   loadRemediationPlanDiff,
@@ -55,9 +56,10 @@ import {
 } from "./api";
 import { beginLogin, clearAuthentication, initializeAuth } from "./auth";
 import type { AuthState } from "./auth";
-import type { AuditEvent, ChaosExperiment, ChaosExperimentRun, ClusterInventory, Dashboard, EvidenceBundle, Finding, FindingException, Integration, IntegrationHealth, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationRun, ScanSummary, Severity } from "./types";
+import type { AuditEvent, ChaosExperiment, ChaosExperimentRun, ClusterInventory, Dashboard, EvidenceBundle, Finding, FindingException, Integration, IntegrationHealth, ManagedResource, ManagedResourceReference, ManagedResourceSnapshot, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationRun, ScanSummary, Severity } from "./types";
 
-type View = "dashboard" | "findings" | "fix-center" | "runtime" | "policy" | "experiments" | "audit" | "integrations" | "settings";
+type View = "dashboard" | "findings" | "fix-center" | "runtime" | "policy" | "managed-resources" | "experiments" | "audit" | "integrations" | "settings";
+type ManagedResourceAccess = "ready" | "forbidden" | "unavailable";
 
 const viewItems: Array<{ id: View; label: string; icon: typeof ShieldCheck }> = [
   { id: "dashboard", label: "Dashboard", icon: Gauge },
@@ -65,6 +67,7 @@ const viewItems: Array<{ id: View; label: string; icon: typeof ShieldCheck }> = 
   { id: "fix-center", label: "Fix Center", icon: Wrench },
   { id: "runtime", label: "Runtime", icon: Activity },
   { id: "policy", label: "Policy", icon: LockKeyhole },
+  { id: "managed-resources", label: "Managed resources", icon: Database },
   { id: "experiments", label: "Experiments", icon: FlaskConical },
   { id: "audit", label: "Audit", icon: FileClock },
   { id: "integrations", label: "Integrations", icon: BellRing },
@@ -123,6 +126,9 @@ function App() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [integrationHealth, setIntegrationHealth] = useState<Record<string, IntegrationHealth>>({});
+  const [managedResources, setManagedResources] = useState<ManagedResourceSnapshot | null>(null);
+  const [managedResourceAccess, setManagedResourceAccess] = useState<ManagedResourceAccess>("ready");
+  const [managedResourceMessage, setManagedResourceMessage] = useState("");
   const [experiments, setExperiments] = useState<ChaosExperiment[]>([]);
   const [experimentRun, setExperimentRun] = useState<ChaosExperimentRun | null>(null);
   const [experimentMessage, setExperimentMessage] = useState("");
@@ -173,14 +179,21 @@ function App() {
   async function refreshData() {
     setLoading(true);
     try {
-      const [dashboardData, findingData, exceptionData, auditData, integrationData, experimentData, chaosRuns] = await Promise.all([
+      const [dashboardData, findingData, exceptionData, auditData, integrationData, experimentData, chaosRuns, managedResourceResult] = await Promise.all([
         loadDashboard(),
         loadFindings(),
         loadFindingExceptions(),
         loadAuditEvents(),
         loadIntegrations(),
         loadExperiments(),
-        loadChaosRuns()
+        loadChaosRuns(),
+        loadManagedResources()
+          .then((snapshot) => ({ snapshot, access: "ready" as const, message: "" }))
+          .catch((error: unknown) => ({
+            snapshot: null,
+            access: error instanceof APIError && error.status === 403 ? "forbidden" as const : "unavailable" as const,
+            message: error instanceof Error ? error.message : "Managed-resource discovery is unavailable."
+          }))
       ]);
       const providerData = await loadModelProviders().catch((error: unknown) => {
         if (error instanceof APIError && error.status === 403) return null;
@@ -192,6 +205,9 @@ function App() {
       setAuditEvents(auditData);
       setIntegrations(integrationData);
       void refreshIntegrationHealth(integrationData);
+      setManagedResources(managedResourceResult.snapshot);
+      setManagedResourceAccess(managedResourceResult.access);
+      setManagedResourceMessage(managedResourceResult.message);
       setModelProviders(providerData);
       setExperiments(dashboardData.experiments?.length ? dashboardData.experiments : experimentData);
       setExperimentRun(chaosRuns[0] ?? null);
@@ -433,6 +449,12 @@ function App() {
     }
   }
 
+  const currentView = viewItems.find((item) => item.id === activeView) ?? viewItems[0];
+  const openFindings = findings.filter((finding) => finding.status === "open" || finding.status === "in_review");
+  const priorityFinding = [...openFindings].sort((a, b) => b.riskScore - a.riskScore)[0];
+  const aiAgentIntegration = integrations.find((integration) => integration.name.toLowerCase().includes("openai") || integration.name.toLowerCase().includes("ai agent"));
+  const agentOnline = Boolean(aiAgentIntegration?.enabled);
+
 	if (authState === null) {
 		return <main className="auth-gate"><ShieldCheck size={32} aria-hidden="true" /><h1>KubeAthrix</h1><p>Loading authentication configuration…</p></main>;
 	}
@@ -455,9 +477,24 @@ function App() {
             <span>Guardrail control plane</span>
           </div>
         </div>
+        <div className="sidebar-status" aria-label="Cluster status summary">
+          <div>
+            <span>Risk index</span>
+            <strong>{Math.round(dashboard?.meanRiskScore ?? 0)}</strong>
+          </div>
+          <div>
+            <span>Approvals</span>
+            <strong>{dashboard?.pendingApprovals ?? 0}</strong>
+          </div>
+          <div>
+            <span>AI agent</span>
+            <strong>{agentOnline ? "on" : "off"}</strong>
+          </div>
+        </div>
         <nav className="nav-list">
           {viewItems.map((item) => {
             const Icon = item.icon;
+            const badge = item.id === "findings" && dashboard?.openCritical ? dashboard.openCritical : item.id === "fix-center" && dashboard?.pendingApprovals ? dashboard.pendingApprovals : null;
             return (
               <button
                 className={activeView === item.id ? "nav-item active" : "nav-item"}
@@ -467,26 +504,32 @@ function App() {
               >
                 <Icon size={18} aria-hidden="true" />
                 <span>{item.label}</span>
+                {badge ? <em>{badge}</em> : null}
               </button>
             );
           })}
         </nav>
         <div className="guardrail-note">
 		  <ShieldCheck size={18} aria-hidden="true" />
-		  <span>Deterministic by default. Controllers execute only versioned typed actions.</span>
+		  <span>AI can explain and plan, but controllers execute only versioned typed actions with dry-run, approval, verification, and rollback metadata.</span>
         </div>
       </aside>
 
       <main className="main-content">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Cluster cockpit</p>
-            <h1>{viewItems.find((item) => item.id === activeView)?.label}</h1>
+          <div className="page-title">
+            <p className="eyebrow">Cluster cockpit / {currentView.label}</p>
+            <h1>{currentView.label}</h1>
+            <span>Live security operations for findings, typed remediation, policy posture, runtime signal, experiments, audit, and integrations.</span>
           </div>
           <div className="topbar-actions">
             <span className="status-pill">
               <CheckCircle2 size={16} aria-hidden="true" />
               {dashboard?.bundledEnginesOnline ?? 0} engines configured
+            </span>
+            <span className={agentOnline ? "status-pill signal" : "status-pill muted"}>
+              <Bot size={16} aria-hidden="true" />
+              AI agent {agentOnline ? "watching" : "not configured"}
             </span>
             <button className="icon-button" type="button" title="Refresh data" aria-label="Refresh data" onClick={() => void refreshData()}>
               <RotateCcw size={18} aria-hidden="true" />
@@ -499,6 +542,38 @@ function App() {
             )}
           </div>
         </header>
+
+        <section className="command-strip" aria-label="Operational command strip">
+          <div className="command-card danger">
+            <span>Critical queue</span>
+            <strong>{dashboard?.openCritical ?? 0}</strong>
+            <small>{priorityFinding ? `Top risk: ${priorityFinding.riskScore}` : "No active critical queue"}</small>
+          </div>
+          <div className="command-card warning">
+            <span>Pending approvals</span>
+            <strong>{dashboard?.pendingApprovals ?? 0}</strong>
+            <small>Human-gated actions stay separated from execution.</small>
+          </div>
+          <div className="command-card signal">
+            <span>Cluster coverage</span>
+            <strong>{dashboard?.scan?.resourcesScanned ?? 0}</strong>
+            <small>{dashboard?.evidenceFreshness ?? "unknown"} evidence freshness.</small>
+          </div>
+          <div className="command-actions">
+            <button className="primary-button" type="button" disabled={!priorityFinding} onClick={() => {
+              if (!priorityFinding) return;
+              setSelectedFindingId(priorityFinding.id);
+              setActiveView("findings");
+            }}>
+              <Search size={18} aria-hidden="true" />
+              Triage top risk
+            </button>
+            <button className="secondary-button" type="button" onClick={() => setActiveView("fix-center")}>
+              <Wrench size={18} aria-hidden="true" />
+              Open Fix Center
+            </button>
+          </div>
+        </section>
 
         {loadError && <ErrorPanel message={loadError} onRetry={() => void refreshData()} />}
         {!loadError && loading && <LoadingPanel />}
@@ -530,6 +605,7 @@ function App() {
         )}
         {!loadError && !loading && activeView === "runtime" && <RuntimeView findings={findings.filter((finding) => finding.source === "falco" || finding.source === "tetragon")} />}
         {!loadError && !loading && activeView === "policy" && dashboard && <PolicyView findings={findings} dashboard={dashboard} />}
+        {!loadError && !loading && activeView === "managed-resources" && <ManagedResourcesView snapshot={managedResources} access={managedResourceAccess} message={managedResourceMessage} />}
         {!loadError && !loading && activeView === "experiments" && <ExperimentsView experiments={experiments} run={experimentRun} message={experimentMessage} onStart={handleStartExperiment} onDecision={handleChaosDecision} />}
         {!loadError && !loading && activeView === "audit" && <AuditView events={auditEvents} />}
         {!loadError && !loading && activeView === "integrations" && <IntegrationsView integrations={integrations} health={integrationHealth} />}
@@ -583,6 +659,30 @@ function DashboardView({ dashboard, findings, onOpenFinding }: { dashboard: Dash
   const severityDenominator = Math.max(dashboard.totalFindings, 1);
   return (
     <section className="view-grid dashboard-grid">
+      <div className="panel command-hero wide4-panel">
+        <div className="hero-copy">
+          <p className="eyebrow">Autonomous remediation cockpit</p>
+          <h2>Correlated cluster risk</h2>
+          <p>
+            KubeAthrix correlates scanner evidence, Kubernetes inventory, runtime adapters, policy posture, and typed remediation state so operators can move from detection to approval to verified fix without losing context.
+          </p>
+          <div className="hero-actions">
+            {topFindings[0] && (
+              <button className="primary-button" type="button" onClick={() => onOpenFinding(topFindings[0].id)}>
+                <Sparkles size={18} aria-hidden="true" />
+                Investigate highest risk
+              </button>
+            )}
+            <span className="status-pill muted">No arbitrary kubectl path</span>
+            <span className="status-pill signal">Typed action catalog</span>
+          </div>
+        </div>
+        <div className="hero-radar" aria-label="Current risk posture">
+          <div className="radar-orbit" />
+          <strong>{Math.round(dashboard.meanRiskScore)}</strong>
+          <span>mean risk</span>
+        </div>
+      </div>
       <Metric label="Total findings" value={dashboard.totalFindings} tone="neutral" icon={ShieldCheck} />
       <Metric label="Open critical" value={dashboard.openCritical} tone="danger" icon={AlertTriangle} />
       <Metric label="Pending approvals" value={dashboard.pendingApprovals} tone="warning" icon={UserCheck} />
@@ -662,7 +762,7 @@ function DashboardView({ dashboard, findings, onOpenFinding }: { dashboard: Dash
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Issue graph</p>
-            <h2>Correlated cluster risk</h2>
+            <h2>Risk topology</h2>
           </div>
           <span className="status-pill muted">
             <Network size={16} aria-hidden="true" />
@@ -814,6 +914,13 @@ function FindingDetail({ finding, exceptions, message, onCreatePlan, onStatus, o
         <Fact label="Group" value={finding.correlationGroup} />
         <Fact label="Status" value={humanize(finding.status)} />
       </div>
+      <div className="action-callout">
+        <Sparkles size={20} aria-hidden="true" />
+        <div>
+          <strong>Recommended next action</strong>
+          <span>{finding.recommendedAction || "Generate a typed plan and review the deterministic diff before approval."}</span>
+        </div>
+      </div>
       <h3>Evidence</h3>
       <div className="timeline">
         {finding.evidence.map((item) => (
@@ -892,7 +999,8 @@ function FixCenterView({
   const planBadge = plan ? remediationBadge(plan) : null;
 	const [decisionReason, setDecisionReason] = useState("");
   const decisionLocked = plan?.approvalPolicy.decision === "approved" || plan?.approvalPolicy.decision === "rejected";
-  const executeLocked = !plan || (plan.approvalPolicy.required && plan.approvalPolicy.decision !== "approved") || plan.status === "rejected" || plan.status === "execution_requested";
+  const terminalPlanStatuses = ["proposal_only", "dry_run_passed", "succeeded", "failed", "rolled_back"];
+  const executeLocked = !plan || (plan.approvalPolicy.required && plan.approvalPolicy.decision !== "approved") || ["rejected", "execution_requested", "running", ...terminalPlanStatuses].includes(plan.status);
   return (
     <section className="view-grid fix-grid">
       <div className="panel wide-panel">
@@ -959,6 +1067,36 @@ function FixCenterView({
               </div>
             ))}
           </div>
+          {plan.ai && (
+            <div className="ai-insight-card">
+              <div className="action-row">
+                <Sparkles size={18} aria-hidden="true" />
+                <div>
+                  <strong>AI decision support</strong>
+                  <span>{plan.ai.provider} / {plan.ai.model} / confidence {plan.ai.confidence}</span>
+                </div>
+                <code>{plan.ai.mode}</code>
+              </div>
+              <p className="summary-text">{plan.ai.summary}</p>
+              <div className="two-column-list">
+                <div>
+                  <h3>Reasoning</h3>
+                  <ul>
+                    <li>{plan.ai.rootCause}</li>
+                    <li>{plan.ai.impact}</li>
+                    <li>{plan.ai.recommendedAction}</li>
+                  </ul>
+                </div>
+                <div>
+                  <h3>Safety boundary</h3>
+                  <ul>
+                    <li>{plan.ai.autonomousPolicy}</li>
+                    {(plan.ai.safetyNotes ?? []).map((note) => <li key={note}>{note}</li>)}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
           <p className="summary-text">{plan.dryRunResult.message}</p>
           <div className="two-column-list">
             <div>
@@ -1184,6 +1322,217 @@ function PolicyView({ findings, dashboard }: { findings: Finding[]; dashboard: D
       </div>
     </section>
   );
+}
+
+function ManagedResourcesView({ snapshot, access, message }: { snapshot: ManagedResourceSnapshot | null; access: ManagedResourceAccess; message: string }) {
+  if (access === "forbidden") {
+    return (
+      <section className="view-grid managed-resource-grid">
+        <ManagedResourceBoundary />
+        <ManagedResourceState
+          eyebrow="Access boundary"
+          title="Managed-resource inventory is not available to this identity"
+          message="Your Kubernetes scope does not permit this cluster-wide inventory. Native findings and other authorized console data remain available."
+        />
+      </section>
+    );
+  }
+
+  if (access === "unavailable" || !snapshot) {
+    return (
+      <section className="view-grid managed-resource-grid">
+        <ManagedResourceBoundary />
+        <ManagedResourceState
+          eyebrow="Discovery status"
+          title="Managed-resource discovery is unavailable"
+          message={message || "The optional discovery endpoint is not configured or could not be reached."}
+        />
+      </section>
+    );
+  }
+
+  if (!snapshot.enabled) {
+    return (
+      <section className="view-grid managed-resource-grid">
+        <ManagedResourceBoundary />
+        <ManagedResourceState
+          eyebrow="Discovery status"
+          title="Managed-resource discovery is disabled"
+          message="Enable the allowlisted managed-external-resource adapter and its read-only RBAC rules to inventory Kubernetes-managed resources."
+        />
+      </section>
+    );
+  }
+
+  const resources = snapshot.resources ?? [];
+  const relationships = snapshot.relationships ?? [];
+  const warnings = snapshot.warnings ?? [];
+  const readyCount = resources.filter((resource) => resource.status.ready === true).length;
+  const syncedCount = resources.filter((resource) => resource.status.synced === true).length;
+  const gitOpsCount = resources.filter((resource) => resource.provenance.gitOps).length;
+
+  return (
+    <section className="view-grid managed-resource-grid">
+      <ManagedResourceBoundary />
+      <Metric label="Managed objects" value={resources.length} tone="neutral" icon={Database} />
+      <Metric label="Ready" value={readyCount} tone="signal" icon={CheckCircle2} />
+      <Metric label="Synced" value={syncedCount} tone="signal" icon={GitPullRequest} />
+      <Metric label="GitOps-owned" value={gitOpsCount} tone="neutral" icon={Network} />
+
+      {resources.map((resource) => {
+        const related = relationships.filter((relationship) => referenceMatchesResource(relationship.from, resource) || referenceMatchesResource(relationship.to, resource));
+        return (
+          <article className="panel wide-panel managed-resource-card" key={resource.id}>
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">{resource.apiVersion} / {resource.plural}</p>
+                <h2>{resource.kind}/{resource.name}</h2>
+              </div>
+              <div className="managed-resource-badges">
+                <span className={resource.status.stalled === true ? "status-pill danger" : "status-pill muted"}>
+                  {resource.status.stalled === true ? "Stalled" : resource.status.state || "Observed"}
+                </span>
+                {resource.provenance.gitOps && <span className="status-pill signal">GitOps</span>}
+              </div>
+            </div>
+            <div className="fact-grid dense managed-resource-facts">
+              <Fact label="Scope" value={resource.namespace ? `Namespace: ${resource.namespace}` : "Cluster-scoped"} />
+              <Fact label="Controller" value={resource.provenance.controller || humanize(resource.provenance.system)} />
+              <Fact label="Management" value={humanize(resource.provenance.system)} />
+              <Fact label="Ready" value={managedBoolean(resource.status.ready)} />
+              <Fact label="Synced" value={managedBoolean(resource.status.synced)} />
+              <Fact label="Stalled" value={managedBoolean(resource.status.stalled)} />
+              <Fact label="Generation" value={resource.generation ?? "unknown"} />
+              <Fact label="Observed generation" value={resource.status.observedGeneration ?? "unknown"} />
+              <Fact label="External ID" value={resource.externalId || "not reported"} />
+              <Fact label="Relationships" value={related.length} />
+            </div>
+            <div className="managed-source-card">
+              <GitPullRequest size={19} aria-hidden="true" />
+              <div>
+                <strong>Source of truth</strong>
+                <span>{managedResourceSourceOfTruth(resource)}</span>
+                <small>Any change is HITL and proposal-only; review and apply it at this source rather than mutating the external provider directly.</small>
+              </div>
+            </div>
+            {(resource.status.conditions ?? []).length > 0 && (
+              <div className="managed-condition-list" aria-label={`${resource.kind} ${resource.name} conditions`}>
+                {(resource.status.conditions ?? []).slice(0, 4).map((condition) => (
+                  <span key={`${condition.type}-${condition.reason ?? condition.status}`}>
+                    <strong>{condition.type}: {condition.status}</strong>
+                    {condition.reason ? ` / ${condition.reason}` : ""}
+                  </span>
+                ))}
+              </div>
+            )}
+          </article>
+        );
+      })}
+
+      {resources.length === 0 && (
+        <ManagedResourceState
+          eyebrow="Allowlisted discovery"
+          title="No managed resources were returned"
+          message="Discovery is enabled, but no objects matched the configured allowlist and current Kubernetes authorization scope."
+        />
+      )}
+
+      {relationships.length > 0 && (
+        <div className="panel wide4-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Ownership graph</p>
+              <h2>Kubernetes source relationships</h2>
+            </div>
+            <span className="status-pill muted">{relationships.length} links</span>
+          </div>
+          <div className="managed-relationship-list">
+            {relationships.slice(0, 12).map((relationship, index) => (
+              <div className="managed-relationship" key={`${managedResourceRefLabel(relationship.from)}-${relationship.type}-${managedResourceRefLabel(relationship.to)}-${index}`}>
+                <code>{managedResourceRefLabel(relationship.from)}</code>
+                <span>{humanize(relationship.type)}</span>
+                <code>{managedResourceRefLabel(relationship.to)}</code>
+                {relationship.path && <small>{relationship.path}</small>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="panel wide4-panel managed-warning-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Partial discovery</p>
+              <h2>Warnings</h2>
+            </div>
+            <AlertTriangle size={20} aria-hidden="true" />
+          </div>
+          <div className="timeline compact-timeline">
+            {warnings.map((warning, index) => (
+              <div className="timeline-item fail" key={`${warning.apiGroup}-${warning.resource}-${warning.code}-${index}`}>
+                <strong>{warning.code}</strong>
+                <span>{warning.message}</span>
+                <small>{warning.apiGroup}/{warning.version} / {warning.resource}</small>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {snapshot.observedAt && <p className="managed-observed-at">Last observed {new Date(snapshot.observedAt).toLocaleString()} · {snapshot.findings?.length ?? 0} normalized finding(s)</p>}
+    </section>
+  );
+}
+
+function ManagedResourceBoundary() {
+  return (
+    <div className="panel wide4-panel managed-boundary">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Kubernetes-managed external resources</p>
+          <h2>Read-only discovery with source-of-truth remediation</h2>
+        </div>
+        <ShieldCheck size={21} aria-hidden="true" />
+      </div>
+      <p className="summary-text">KubeAthrix observes only explicitly allowlisted Kubernetes APIs. It does not receive cloud IAM credentials or mutate external provider APIs. AI can explain evidence and propose a typed change, but every managed-resource change remains human-reviewed and proposal-only.</p>
+    </div>
+  );
+}
+
+function ManagedResourceState({ eyebrow, title, message }: { eyebrow: string; title: string; message: string }) {
+  return (
+    <div className="panel wide4-panel managed-resource-state">
+      <div className="panel-heading">
+        <div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div>
+        <Database size={20} aria-hidden="true" />
+      </div>
+      <p className="summary-text">{message}</p>
+    </div>
+  );
+}
+
+function managedBoolean(value: boolean | undefined) {
+  if (value === undefined) return "Unknown";
+  return value ? "Yes" : "No";
+}
+
+function managedResourceSourceOfTruth(resource: ManagedResource) {
+  if (resource.provenance.sourceRef) return resource.provenance.sourceRef;
+  if (resource.provenance.gitOps) return `Git-backed manifests reconciled by ${resource.provenance.controller || humanize(resource.provenance.system)}`;
+  if (resource.provenance.system === "helm") return "Helm release values and chart";
+  if (resource.provenance.system === "crossplane" || resource.provenance.system === "operator") return `${resource.kind}/${resource.name} spec reconciled by ${resource.provenance.controller || humanize(resource.provenance.system)}`;
+  return `${resource.kind}/${resource.name} Kubernetes object (ownership unconfirmed)`;
+}
+
+function referenceMatchesResource(reference: ManagedResourceReference, resource: ManagedResource) {
+  if (reference.uid && resource.uid) return reference.uid === resource.uid;
+  return reference.name === resource.name && reference.namespace === resource.namespace && (!reference.kind || reference.kind === resource.kind);
+}
+
+function managedResourceRefLabel(reference: ManagedResourceReference) {
+  const identity = `${reference.kind || reference.apiVersion || "Resource"}/${reference.name}`;
+  return reference.namespace ? `${reference.namespace}/${identity}` : identity;
 }
 
 function ExperimentsView({
@@ -1425,8 +1774,8 @@ function SettingsView({ providers }: { providers: ModelProviderSettings | null }
       <div className="panel wide-panel">
         <div className="panel-heading">
           <div>
-			<p className="eyebrow">Optional AI (not active)</p>
-			<h2>Provider reference inventory</h2>
+			<p className="eyebrow">Optional AI assist</p>
+			<h2>Provider references and gateway</h2>
           </div>
           <KeyRound size={20} aria-hidden="true" />
         </div>
@@ -1442,7 +1791,7 @@ function SettingsView({ providers }: { providers: ModelProviderSettings | null }
             </div>
           ))}
         </div>
-		<p className="summary-text">KubeAthrix 0.2.0 has no model invocation gateway. These secret-reference records are inventory only and are never resolved or called. Planning remains deterministic. Raw API keys are excluded from the API and browser schema.</p>
+		<p className="summary-text">When enabled by the API server, AI decision support explains findings and typed plans using structured output. It cannot add executable actions or bypass dry-run, approval, verification, or rollback controls.</p>
       </div>
     </section>
   );
@@ -1472,7 +1821,22 @@ function Fact({ label, value }: { label: string; value: string | number }) {
 }
 
 function remediationBadge(plan: RemediationPlan) {
-  if (plan.status === "approved") {
+  if (plan.status === "execution_requested") {
+    return { label: "Execution requested", tone: "signal" };
+  }
+  if (plan.status === "proposal_only") {
+    return { label: "Proposal only", tone: "signal" };
+  }
+  if (plan.status === "dry_run_passed") {
+    return { label: "Dry-run passed", tone: "signal" };
+  }
+  if (plan.status === "succeeded") {
+    return { label: "Verified", tone: "signal" };
+  }
+  if (plan.status === "failed") {
+    return { label: "Failed", tone: "danger" };
+  }
+  if (plan.status === "approved" || plan.approvalPolicy.decision === "approved") {
     return { label: "Approved; not executed", tone: "signal" };
   }
   if (plan.status === "rejected") {

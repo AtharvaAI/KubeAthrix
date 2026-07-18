@@ -29,7 +29,9 @@ func TestWorkflowClientPersistsPlanApprovalAndExecutionState(t *testing.T) {
 		ID: "plan-finding-platform-probes-001", FindingID: finding.ID, RootCause: "probe configuration is absent",
 		Actions:  []core.TypedAction{{Type: "patch_workload_probes", Target: finding.Resources[0], Description: "patch configured probes"}},
 		RiskTier: core.RiskTierB, ApprovalPolicy: core.ApprovalPolicy{Required: true, Decision: core.ApprovalPending},
+		DryRunResult:      core.DryRunResult{Passed: false, Message: "server-side dry-run has not been performed; this is a proposal"},
 		VerificationSteps: []string{"read workload"}, RollbackSteps: []string{"restore snapshot"}, Status: "proposed", CreatedAt: fixed,
+		AI: &core.AIAnalysis{Provider: "approved-provider", Model: "approved-model", Mode: "assistive", Summary: "bounded summary", RootCause: "bounded cause", Impact: "bounded impact", RecommendedAction: "human_review", Confidence: "medium", SafetyNotes: []string{"review required"}, AutonomousPolicy: "advisory only", GeneratedAt: fixed},
 	}
 	actor := "platform-operator (user-42)"
 	if err := client.CreatePlan(ctx, finding, plan, actor); err != nil {
@@ -45,6 +47,14 @@ func TestWorkflowClientPersistsPlanApprovalAndExecutionState(t *testing.T) {
 	requested, _, _ := unstructured.NestedBool(planObject.Object, "spec", "executionRequested")
 	if requested {
 		t.Fatal("new plan must not request execution")
+	}
+	dryRunMessage, _, _ := unstructured.NestedString(planObject.Object, "spec", "dryRunResult", "message")
+	if dryRunMessage == "" {
+		t.Fatal("plan CRD spec must include dryRunResult for Kubernetes schema validation")
+	}
+	aiModel, _, _ := unstructured.NestedString(planObject.Object, "spec", "ai", "model")
+	if aiModel != "approved-model" {
+		t.Fatalf("AI decision evidence was not persisted in the workflow CRD: %q", aiModel)
 	}
 	approvalID := "approval-" + plan.ID
 	approvalObject, err := dynamicClient.Resource(approvalResource).Namespace("kubeathrix").Get(ctx, ObjectName(approvalID), metav1.GetOptions{})

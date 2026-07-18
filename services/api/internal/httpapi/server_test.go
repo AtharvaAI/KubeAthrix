@@ -274,6 +274,49 @@ func TestDashboardAggregation(t *testing.T) {
 	if dashboard.BundledEnginesOnline != 3 {
 		t.Fatalf("expected 3 bundled engines online, got %d", dashboard.BundledEnginesOnline)
 	}
+	if dashboard.PendingApprovals != 0 {
+		t.Fatalf("expected no pending approvals before a plan is requested, got %d", dashboard.PendingApprovals)
+	}
+}
+
+func TestDashboardCountsOnlyOpenApprovalRequests(t *testing.T) {
+	handler := testServer()
+
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"finding-public-rbac-image"}`)))
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("expected create plan 201, got %d: %s", createResponse.Code, createResponse.Body.String())
+	}
+	var plan core.RemediationPlan
+	if err := json.NewDecoder(createResponse.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+
+	pendingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(pendingResponse, httptest.NewRequest(http.MethodGet, "/api/dashboard", nil))
+	var pending core.Dashboard
+	if err := json.NewDecoder(pendingResponse.Body).Decode(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.PendingApprovals != 1 {
+		t.Fatalf("expected one pending approval after plan creation, got %d", pending.PendingApprovals)
+	}
+
+	approveResponse := httptest.NewRecorder()
+	handler.ServeHTTP(approveResponse, jsonRequest(http.MethodPost, "/api/approvals/approval-"+plan.ID+"/approve", bytes.NewBufferString(`{"reason":"reviewed"}`)))
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected approval 200, got %d: %s", approveResponse.Code, approveResponse.Body.String())
+	}
+
+	approvedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(approvedResponse, httptest.NewRequest(http.MethodGet, "/api/dashboard", nil))
+	var approved core.Dashboard
+	if err := json.NewDecoder(approvedResponse.Body).Decode(&approved); err != nil {
+		t.Fatal(err)
+	}
+	if approved.PendingApprovals != 0 {
+		t.Fatalf("expected no pending approvals after approval, got %d", approved.PendingApprovals)
+	}
 }
 
 func TestCreatePlanUsesTypedActionsOnly(t *testing.T) {
@@ -298,6 +341,29 @@ func TestCreatePlanUsesTypedActionsOnly(t *testing.T) {
 	}
 	if !plan.ApprovalPolicy.Required {
 		t.Fatal("critical human-only remediation must require approval")
+	}
+}
+
+func TestCreatePlanCanAttachAIAnalysisWithoutChangingActions(t *testing.T) {
+	fixed := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	repo := store.NewMemoryStore(store.WithClock(func() time.Time { return fixed }), store.WithFindings(testFindings(fixed)))
+	handler := httpapi.NewServer(repo, httpapi.Config{InsecureDevAuth: true, AllowMemoryWorkflows: true, AIAdvisor: fakeAIAdvisor{now: fixed}}).Routes()
+
+	request := jsonRequest(http.MethodPost, "/api/remediation-plans", bytes.NewBufferString(`{"findingId":"finding-namespace-quota"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var plan core.RemediationPlan
+	if err := json.NewDecoder(response.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.AI == nil {
+		t.Fatal("expected AI decision support on the plan")
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Type != "apply_resource_governance" {
+		t.Fatalf("AI advisor must not replace typed actions: %#v", plan.Actions)
 	}
 }
 
@@ -361,6 +427,26 @@ func TestPlanPreviewDiffAndEvidenceBundle(t *testing.T) {
 	if bundle.Summary["plans"] != 1 || bundle.Summary["auditEvents"] == 0 {
 		t.Fatalf("expected plan and audit evidence, got %#v", bundle.Summary)
 	}
+}
+
+type fakeAIAdvisor struct {
+	now time.Time
+}
+
+func (a fakeAIAdvisor) Analyze(_ context.Context, _ core.Finding, _ core.RemediationPlan) (core.AIAnalysis, error) {
+	return core.AIAnalysis{
+		Provider:          "test",
+		Model:             "stub",
+		Mode:              "assistive",
+		Summary:           "AI summary",
+		RootCause:         "AI root cause",
+		Impact:            "AI impact",
+		RecommendedAction: "Use the typed action.",
+		Confidence:        "high",
+		SafetyNotes:       []string{"No direct mutation."},
+		AutonomousPolicy:  "Typed actions only.",
+		GeneratedAt:       a.now,
+	}, nil
 }
 
 func TestExecuteRequiresApprovalForGatedPlan(t *testing.T) {

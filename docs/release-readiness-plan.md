@@ -27,8 +27,8 @@ readiness because the following blockers are present:
   Kyverno, or Kubescape report adapters.
 - Findings are synthesized per check and grouped with string heuristics; there
   is no persisted ingestion/deduplication lifecycle or exception API.
-- Model-provider settings are secret references only; there is no model
-  gateway. Product behavior must remain deterministic and AI-optional.
+- AI decision support is optional and bounded; deterministic planning and typed
+  execution safety remain the default.
 - Chaos execution accepts allowlisted kinds but lacks target/namespace bounds,
   persistent approval, polling, abort, cleanup, and recovery verification.
 - Helm defaults to development auth and bundled engines, has broad network
@@ -88,15 +88,16 @@ readiness because the following blockers are present:
 
 ### 5. Optional model gateway and bounded chaos — safely scoped
 
-- Keep planning deterministic by default and label AI as optional until a
-  provider passes structured-output, egress, injection, timeout, retry, cost,
-  audit, and evaluation controls.
+- Keep planning deterministic by default. AI remains advisory and must pass
+  structured-output, egress, injection, timeout, retry, cost, audit, and
+  evaluation controls before it is enabled in production.
 - Split chaos preflight from execution; add allowlists, system-namespace
   protection, selector/duration/blast-radius bounds, approvals, persistence,
   polling, abort, cleanup, TTL, recovery checks, and audit events.
 
-The release deliberately implements no model invocation; model settings remain
-reference inventory only. Chaos remains preflight-only by default. An explicit
+AI invocation is disabled by default and returns decision-support metadata only;
+typed actions, approvals, dry-run, verification, rollback, and audit remain the
+execution contract. Chaos remains preflight-only by default. An explicit
 execution profile now requires durable Postgres, a non-system namespace
 allowlist, and a compatible Chaos Mesh API, then persists separate request,
 approval, execution, polling, cleanup/abort, expiry, and recovery-verification

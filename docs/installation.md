@@ -107,6 +107,53 @@ Or through Helm:
 
 After upgrading from an older chart, apply the new RBAC by running `helm upgrade` again before expecting live inventory counts in the console.
 
+### Opt-in Kubernetes-managed external resources
+
+The API can inspect administrator-approved external-resource CRDs in its one
+connected cluster. This feature is disabled by default and requires exact API
+groups, versions, resource plurals, and scopes in a values file:
+
+```yaml
+api:
+  managedExternalResources:
+    enabled: true
+    allowlist:
+      - apiGroup: example.platform.io
+        version: v1alpha1
+        resources:
+          - managedresources
+        namespaced: true
+      - apiGroup: iam.example.platform.io
+        version: v1beta1
+        resources:
+          - roles
+          - policies
+        namespaced: false
+```
+
+Helm rejects an enabled empty allowlist, the core API group, and wildcard API
+groups, versions, or resources. Each entry grants the API service account only
+cluster-wide `list` on those API-group/resource plurals. Kubernetes RBAC cannot
+restrict the grant to one served version, and `namespaced: true` still covers
+all namespaces; the collector calls only the configured version and the API
+filters responses by the authenticated namespace scope. Verify the CRD's actual
+plural, served version, and scope before installing. Use separately maintained
+namespace Roles/RoleBindings if the service account itself must not list every
+namespace.
+
+This setting does not enable direct AWS, Azure, GCP, or other provider API
+access and does not discover resources that are absent from Kubernetes. It does
+not grant access to core `Secret` objects or Secret payloads. The model receives
+only redacted context selected by KubeAthrix, never Kubernetes or cloud
+credentials.
+
+The initial external-resource path is read-only and proposal-only. IAM changes
+always require human review and explicit action at the source of truth. For a
+controller-managed object, update the owning claim/custom resource rather than
+its generated child. For Argo CD or Flux ownership, update the upstream Git
+repository rather than patching live state; without a configured upstream
+change path, stop at a reviewable proposal.
+
 ## Production-Oriented Values
 
 ```yaml
@@ -180,6 +227,55 @@ engines:
   litmus:
     enabled: false
 ```
+
+## Optional AI Assist and Agent
+
+AI decision support is disabled by default. When enabled, it adds structured
+explanations to remediation previews and plans; execution still uses only
+catalog-validated typed actions with dry-run, approval, verification, rollback,
+and audit controls.
+
+```powershell
+kubectl -n kubeathrix create secret generic kubeathrix-ai `
+  --from-literal=api-key="<provider-api-key>"
+
+helm upgrade --install kubeathrix ./charts/kubeathrix `
+  -n kubeathrix --create-namespace `
+  --reuse-values `
+  --set ai.enabled=true `
+  --set ai.provider=openai-compatible `
+  --set ai.endpoint=https://api.openai.com/v1/chat/completions `
+  --set ai.model=gpt-5 `
+  --set ai.existingSecret=kubeathrix-ai `
+  --set ai.apiKeyKey=api-key
+```
+
+To run the always-on AI agent, enable the agent gate as well:
+
+```powershell
+helm upgrade --install kubeathrix ./charts/kubeathrix `
+  -n kubeathrix --create-namespace `
+  --reuse-values `
+  --set ai.enabled=true `
+  --set ai.existingSecret=kubeathrix-ai `
+  --set ai.model=gpt-5 `
+  --set ai.agent.enabled=true `
+  --set ai.agent.autoPlan=true `
+  --set ai.agent.autoExecuteTierA=false
+```
+
+`autoExecuteTierA=true` only requests execution for non-approval Tier A typed
+actions. Riskier plans remain approval-gated or proposal-only.
+
+Production AI configuration should require HTTPS and normally set
+`ai.endpointHostAllowlist`, plus `ai.excludedSources` and
+`ai.excludedNamespaces` for evidence that must not leave the cluster. The
+request is centrally redacted and bounded by `ai.maxInputBytes`; responses are
+bounded by `ai.maxOutputTokens`, strictly validated, and protected by a
+consecutive-failure circuit breaker. With empty exclusion lists, eligible
+findings from every configured source and namespace may be sent to the approved
+provider. The hostname check is application-level, so use an egress gateway or
+site-specific NetworkPolicy when the network must enforce the destination too.
 
 ## Chaos Experiments
 

@@ -1,3 +1,5 @@
+{{- include "kubeathrix.validateManagedExternalResources" . -}}
+{{- $managedExternalResources := .Values.api.managedExternalResources | default dict -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -6,7 +8,7 @@ metadata:
     {{- include "kubeathrix.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "pods", "services", "events", "serviceaccounts", "configmaps", "resourcequotas", "limitranges", "persistentvolumeclaims"]
+    resources: ["nodes", "namespaces", "pods", "services", "events", "serviceaccounts", "configmaps", "resourcequotas", "limitranges", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
@@ -47,6 +49,16 @@ rules:
   - apiGroups: ["spdx.softwarecomposition.kubescape.io"]
     resources: ["workloadconfigurationscansummaries", "vulnerabilitymanifestsummaries"]
     verbs: ["get", "list", "watch"]
+  {{- if default false $managedExternalResources.enabled }}
+  {{- range $entry := $managedExternalResources.allowlist }}
+  - apiGroups: [{{ $entry.apiGroup | quote }}]
+    resources:
+      {{- range $resource := $entry.resources }}
+      - {{ $resource | quote }}
+      {{- end }}
+    verbs: ["list"]
+  {{- end }}
+  {{- end }}
   {{- if .Values.chaos.execution.enabled }}
   - apiGroups: ["chaos-mesh.org"]
     resources: ["networkchaos", "stresschaos", "dnschaos"]
@@ -64,6 +76,9 @@ rules:
     resources: ["resourcequotas", "limitranges"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+  - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["apps"]
@@ -71,6 +86,9 @@ rules:
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["security.kubeathrix.io"]
     resources: ["findings", "remediationplans", "approvalrequests", "remediationruns", "exceptions"]

@@ -174,6 +174,30 @@ func (c *WorkflowClient) CreatePlan(ctx context.Context, finding core.Finding, p
 	if err != nil {
 		return err
 	}
+	dryRunResult, err := jsonMap(plan.DryRunResult)
+	if err != nil {
+		return err
+	}
+	planSpec := map[string]any{
+		"findingRef":         map[string]any{"name": ObjectName(finding.ID), "namespace": c.namespace},
+		"rootCause":          plan.RootCause,
+		"actions":            actions,
+		"riskTier":           string(plan.RiskTier),
+		"catalogVersion":     plan.CatalogVersion,
+		"dryRunResult":       dryRunResult,
+		"verificationSteps":  verificationSteps,
+		"rollbackSteps":      rollbackSteps,
+		"approvalPolicy":     approvalPolicy,
+		"executionRequested": false,
+		"runName":            ObjectName("run-" + plan.ID),
+	}
+	if plan.AI != nil {
+		aiAnalysis, mapErr := jsonMap(plan.AI)
+		if mapErr != nil {
+			return mapErr
+		}
+		planSpec["ai"] = aiAnalysis
+	}
 	object := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "security.kubeathrix.io/v1alpha1",
 		"kind":       "RemediationPlan",
@@ -186,18 +210,7 @@ func (c *WorkflowClient) CreatePlan(ctx context.Context, finding core.Finding, p
 				actorAnnotation:     actor,
 			},
 		},
-		"spec": map[string]any{
-			"findingRef":         map[string]any{"name": ObjectName(finding.ID), "namespace": c.namespace},
-			"rootCause":          plan.RootCause,
-			"actions":            actions,
-			"riskTier":           string(plan.RiskTier),
-			"catalogVersion":     plan.CatalogVersion,
-			"verificationSteps":  verificationSteps,
-			"rollbackSteps":      rollbackSteps,
-			"approvalPolicy":     approvalPolicy,
-			"executionRequested": false,
-			"runName":            ObjectName("run-" + plan.ID),
-		},
+		"spec": planSpec,
 	}}
 	if err := c.createIdempotent(ctx, planResource, object, plan.ID); err != nil {
 		return fmt.Errorf("persist RemediationPlan CRD: %w", err)
@@ -384,6 +397,18 @@ func (c *WorkflowClient) GetRun(ctx context.Context, runID string) (core.Remedia
 		CreatedAt:        object.GetCreationTimestamp().Time,
 		UpdatedAt:        transitionTime(object),
 	}, nil
+}
+
+func (c *WorkflowClient) ListApprovals(ctx context.Context) ([]core.ApprovalRequest, error) {
+	list, err := c.client.Resource(approvalResource).Namespace(c.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, workflowError(err)
+	}
+	approvals := make([]core.ApprovalRequest, 0, len(list.Items))
+	for index := range list.Items {
+		approvals = append(approvals, approvalFromObject(&list.Items[index]))
+	}
+	return approvals, nil
 }
 
 func (c *WorkflowClient) ListRuns(ctx context.Context) ([]core.RemediationRun, error) {

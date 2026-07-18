@@ -1,8 +1,13 @@
 package actioncatalog
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +26,12 @@ const (
 	ModeGitOps      ExecutionMode = "gitops_proposal"
 	ModeProposal    ExecutionMode = "proposal_only"
 	ModeInformation ExecutionMode = "informational"
+)
+
+const (
+	ManagedResourceChangeAction = "propose_managed_resource_change"
+	ManagedResourceReviewAction = "review_managed_resource_finding"
+	ManagedResourceJSONPatch    = "application/json-patch+json"
 )
 
 type ResourceKind struct {
@@ -49,6 +60,8 @@ type Definition struct {
 	FailureHandling      string         `json:"failureHandling"`
 	DefaultExecutionMode ExecutionMode  `json:"defaultExecutionMode"`
 	RequiredParameters   []string       `json:"requiredParameters,omitempty"`
+	AllowedParameters    []string       `json:"allowedParameters,omitempty"`
+	StrictParameters     bool           `json:"strictParameters,omitempty"`
 }
 
 var definitions = map[string]Definition{
@@ -109,6 +122,56 @@ var definitions = map[string]Definition{
 	},
 	"propose_network_policy":     proposal("propose_network_policy", RiskC, "Generate reviewable NetworkPolicy manifests; no executor is registered."),
 	"propose_security_hardening": proposal("propose_security_hardening", RiskC, "Generate RBAC, image, admission, or network review artifacts; no executor is registered."),
+	ManagedResourceReviewAction: {
+		Type: ManagedResourceReviewAction, SupportedResources: []ResourceKind{{APIVersion: "*", Kind: "*"}}, RiskTier: RiskC,
+		ApprovalRequired: true,
+		RequiredPermissions: []string{
+			"list the allowlisted Kubernetes-managed resource API group",
+			"no Kubernetes or external-provider mutation permission",
+		},
+		DryRunBehavior:       "Validate the finding, target, management system, and declared source of truth without producing or applying a patch.",
+		DiffStrategy:         "Show the cited flaw and source-of-truth review instruction; an exact change requires a separate trusted proposal artifact.",
+		VerificationChecks:   []string{"A reviewer confirms the controller or GitOps source of truth", "The source owner records a disposition or supplies a separately validated exact proposal"},
+		RollbackProcedure:    []string{"Not applicable because this review action cannot mutate Kubernetes or an external provider"},
+		IdempotencyBehavior:  "Reuse the finding identity and evidence fingerprint; a recreated Kubernetes object receives a new UID-derived finding identity.",
+		FailureHandling:      "Remain proposal-only and notify the source owner; never infer an IAM or provider change from incomplete evidence.",
+		DefaultExecutionMode: ModeProposal,
+		RequiredParameters:   []string{"findingId", "managementSystem", "sourceOfTruth"},
+		AllowedParameters:    []string{"findingId", "managementSystem", "sourceOfTruth"},
+		StrictParameters:     true,
+	},
+	ManagedResourceChangeAction: {
+		Type: ManagedResourceChangeAction, SupportedResources: []ResourceKind{{APIVersion: "*", Kind: "*"}}, RiskTier: RiskC,
+		ApprovalRequired: true,
+		RequiredPermissions: []string{
+			"list the allowlisted Kubernetes-managed resource API group",
+			"no mutation permission; applying the proposal requires a separately approved source-owner workflow",
+		},
+		DryRunBehavior: "Validate the source identity, resourceVersion, generation, RFC 6902 spec patch, exact before/after diff metadata, and rollback spec without writing to Kubernetes or the external provider.",
+		DiffStrategy:   "Show the exact RFC 6902 patch against the owning Kubernetes resource spec and a unified before/after diff bound to SHA-256 spec hashes.",
+		VerificationChecks: []string{
+			"Confirm status.observedGeneration equals metadata.generation on the owning Kubernetes source",
+			"Confirm Ready=True and Synced=True conditions for the current generation",
+			"Re-run the originating policy and relationship checks against the reconciled external resource",
+		},
+		RollbackProcedure: []string{
+			"Restore rollbackSourceSpec through the owning Kubernetes source after a separate approval",
+			"Wait for status.observedGeneration to match metadata.generation and for Ready=True and Synced=True",
+			"Re-run the originating policy and relationship checks after reconciliation",
+		},
+		IdempotencyBehavior:  "Bind the proposal to sourceUID, sourceResourceVersion, sourceGeneration, and spec hashes; regenerate instead of applying when any value is stale.",
+		FailureHandling:      "Remain proposal-only; never report success or mutate either Kubernetes or the external provider unless the source-owner workflow applies the reviewed patch and every verification check passes.",
+		DefaultExecutionMode: ModeProposal,
+		RequiredParameters: []string{
+			"managementController", "sourceName", "sourceUID", "sourceResourceVersion", "sourceGeneration",
+			"externalResourceID", "patchType", "patch", "diff", "rollbackSourceSpec",
+		},
+		AllowedParameters: []string{
+			"managementController", "sourceName", "sourceNamespace", "sourceUID", "sourceResourceVersion", "sourceGeneration",
+			"externalResourceID", "patchType", "patch", "diff", "rollbackSourceSpec",
+		},
+		StrictParameters: true,
+	},
 	"explain_only": {
 		Type: "explain_only", SupportedResources: []ResourceKind{{APIVersion: "*", Kind: "*"}}, RiskTier: RiskD,
 		ApprovalRequired: true, DryRunBehavior: "No write is possible.", DiffStrategy: "Evidence and recommendation only.",
@@ -137,10 +200,8 @@ func Validate(action Action) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
-	for _, parameter := range definition.RequiredParameters {
-		if strings.TrimSpace(action.Params[parameter]) == "" {
-			return Definition{}, fmt.Errorf("action %s requires parameter %s", action.Type, parameter)
-		}
+	if err := validateParameters(definition, action); err != nil {
+		return Definition{}, err
 	}
 	return definition, nil
 }
@@ -152,6 +213,11 @@ func ValidateProposal(action Action) (Definition, error) {
 	}
 	if !supports(definition, action.APIVersion, action.Kind) {
 		return Definition{}, fmt.Errorf("action %s does not support %s %s", action.Type, action.APIVersion, action.Kind)
+	}
+	if definition.StrictParameters {
+		if err := validateParameters(definition, action); err != nil {
+			return Definition{}, err
+		}
 	}
 	return definition, nil
 }
@@ -178,6 +244,165 @@ func supports(definition Definition, apiVersion, kind string) bool {
 
 func workloadKinds() []ResourceKind {
 	return []ResourceKind{{APIVersion: "apps/v1", Kind: "Deployment"}, {APIVersion: "apps/v1", Kind: "StatefulSet"}, {APIVersion: "apps/v1", Kind: "DaemonSet"}}
+}
+
+func validateParameters(definition Definition, action Action) error {
+	for _, parameter := range definition.RequiredParameters {
+		if strings.TrimSpace(action.Params[parameter]) == "" {
+			return fmt.Errorf("action %s requires parameter %s", action.Type, parameter)
+		}
+	}
+	if len(definition.AllowedParameters) > 0 {
+		allowed := make(map[string]struct{}, len(definition.AllowedParameters))
+		for _, parameter := range definition.AllowedParameters {
+			allowed[parameter] = struct{}{}
+		}
+		for parameter := range action.Params {
+			if _, ok := allowed[parameter]; !ok {
+				return fmt.Errorf("action %s does not allow parameter %s", action.Type, parameter)
+			}
+		}
+	}
+	if action.Type == ManagedResourceChangeAction {
+		return validateManagedResourceChange(action)
+	}
+	return nil
+}
+
+type managedResourcePatchOperation struct {
+	Operation string          `json:"op"`
+	Path      string          `json:"path"`
+	Value     json.RawMessage `json:"value,omitempty"`
+}
+
+type managedResourceDiff struct {
+	Format         string `json:"format"`
+	BeforeSpecHash string `json:"beforeSpecHash"`
+	AfterSpecHash  string `json:"afterSpecHash"`
+	Content        string `json:"content"`
+}
+
+func validateManagedResourceChange(action Action) error {
+	if strings.TrimSpace(action.APIVersion) == "" || strings.TrimSpace(action.Kind) == "" || action.APIVersion == "*" || action.Kind == "*" {
+		return fmt.Errorf("action %s requires a concrete apiVersion and kind", action.Type)
+	}
+	if !validDNSName(action.Params["managementController"]) {
+		return fmt.Errorf("action %s parameter managementController must be a lowercase DNS name", action.Type)
+	}
+	generation, err := strconv.ParseInt(action.Params["sourceGeneration"], 10, 64)
+	if err != nil || generation < 1 {
+		return fmt.Errorf("action %s parameter sourceGeneration must be a positive integer", action.Type)
+	}
+	if action.Params["patchType"] != ManagedResourceJSONPatch {
+		return fmt.Errorf("action %s parameter patchType must be %s", action.Type, ManagedResourceJSONPatch)
+	}
+
+	var operations []managedResourcePatchOperation
+	if err := decodeStrictJSON(action.Params["patch"], &operations); err != nil {
+		return fmt.Errorf("action %s parameter patch must be a strict RFC 6902 array: %w", action.Type, err)
+	}
+	mutating := false
+	for index, operation := range operations {
+		if operation.Path != "/spec" && !strings.HasPrefix(operation.Path, "/spec/") {
+			return fmt.Errorf("action %s patch operation %d must target /spec", action.Type, index)
+		}
+		switch operation.Operation {
+		case "add", "replace":
+			if len(operation.Value) == 0 {
+				return fmt.Errorf("action %s patch operation %d requires value", action.Type, index)
+			}
+			mutating = true
+		case "remove":
+			if len(operation.Value) != 0 {
+				return fmt.Errorf("action %s remove operation %d must not include value", action.Type, index)
+			}
+			mutating = true
+		case "test":
+			if len(operation.Value) == 0 {
+				return fmt.Errorf("action %s test operation %d requires value", action.Type, index)
+			}
+		default:
+			return fmt.Errorf("action %s patch operation %d uses unsupported op %q", action.Type, index, operation.Operation)
+		}
+	}
+	if !mutating {
+		return fmt.Errorf("action %s parameter patch requires at least one add, remove, or replace operation", action.Type)
+	}
+
+	var rollbackSpec map[string]any
+	if err := decodeStrictJSON(action.Params["rollbackSourceSpec"], &rollbackSpec); err != nil {
+		return fmt.Errorf("action %s parameter rollbackSourceSpec must be a JSON object: %w", action.Type, err)
+	}
+	if rollbackSpec == nil {
+		return fmt.Errorf("action %s parameter rollbackSourceSpec must be a JSON object", action.Type)
+	}
+	canonicalRollbackSpec, err := json.Marshal(rollbackSpec)
+	if err != nil {
+		return fmt.Errorf("action %s parameter rollbackSourceSpec cannot be canonicalized: %w", action.Type, err)
+	}
+
+	var diff managedResourceDiff
+	if err := decodeStrictJSON(action.Params["diff"], &diff); err != nil {
+		return fmt.Errorf("action %s parameter diff must contain exact diff metadata: %w", action.Type, err)
+	}
+	if diff.Format != "unified" {
+		return fmt.Errorf("action %s diff format must be unified", action.Type)
+	}
+	if !validSHA256(diff.BeforeSpecHash) || !validSHA256(diff.AfterSpecHash) {
+		return fmt.Errorf("action %s diff requires valid beforeSpecHash and afterSpecHash SHA-256 values", action.Type)
+	}
+	rollbackHash := sha256.Sum256(canonicalRollbackSpec)
+	if !strings.EqualFold(diff.BeforeSpecHash, hex.EncodeToString(rollbackHash[:])) {
+		return fmt.Errorf("action %s diff beforeSpecHash does not match rollbackSourceSpec", action.Type)
+	}
+	if strings.EqualFold(diff.BeforeSpecHash, diff.AfterSpecHash) {
+		return fmt.Errorf("action %s diff beforeSpecHash and afterSpecHash must differ", action.Type)
+	}
+	if !strings.Contains(diff.Content, "--- ") || !strings.Contains(diff.Content, "+++ ") || !strings.Contains(diff.Content, "@@") {
+		return fmt.Errorf("action %s diff content must be a unified diff", action.Type)
+	}
+	return nil
+}
+
+func decodeStrictJSON(value string, target any) error {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values are not allowed")
+		}
+		return err
+	}
+	return nil
+}
+
+func validSHA256(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func validDNSName(value string) bool {
+	if value == "" || len(value) > 253 || value != strings.ToLower(value) {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || !asciiAlphaNumeric(label[0]) || !asciiAlphaNumeric(label[len(label)-1]) {
+			return false
+		}
+		for index := 1; index < len(label)-1; index++ {
+			if !asciiAlphaNumeric(label[index]) && label[index] != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func asciiAlphaNumeric(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= '0' && value <= '9'
 }
 
 func proposal(actionType string, risk RiskTier, detail string) Definition {

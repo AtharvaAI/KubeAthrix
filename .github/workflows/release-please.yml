@@ -9,11 +9,16 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  id-token: write
+  attestations: write
 
 jobs:
   release-please:
     name: Create or publish release
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - name: Run Release Please
         id: release
@@ -21,4 +26,13 @@ jobs:
         with:
           config-file: .github/release-please-config.json
           manifest-file: .release-please-manifest.json
-          skip-github-release: true
+
+  publish-images:
+    name: Verify and publish release artifacts
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/publish-images.yml
+    with:
+      release_tag: ${{ needs.release-please.outputs.tag_name }}
+      push_latest: true
+    secrets: inherit
