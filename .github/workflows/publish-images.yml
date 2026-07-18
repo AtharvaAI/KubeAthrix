@@ -395,15 +395,16 @@ jobs:
         run: echo '${{ secrets.DOCKERHUB_TOKEN }}' | helm registry login docker.io -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
       - name: Push and sign OCI chart
         run: |
-          OUTPUT=$(helm push "dist/kubeathrix-${{ steps.version.outputs.version }}.tgz" oci://docker.io/prashantdey)
-          DIGEST=$(echo "$OUTPUT" | sed -n 's/^Digest: //p')
+          OUTPUT=$(helm push "dist/kubeathrix-${{ steps.version.outputs.version }}.tgz" oci://docker.io/prashantdey 2>&1)
+          printf '%s\n' "$OUTPUT"
+          DIGEST=$(printf '%s\n' "$OUTPUT" | sed -n 's/^Digest: //p' | tail -n 1)
           test -n "$DIGEST"
           cosign sign --yes "docker.io/prashantdey/kubeathrix@$DIGEST"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: kubeathrix-release-artifacts
           path: dist/
-      - name: Create GitHub release after verified publication
+      - name: Create or update GitHub release after verified publication
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -412,8 +413,9 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           TAG="v${VERSION}"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; refusing to replace a published release" >&2
-            exit 1
+            echo "Release $TAG already exists; attaching verified artifacts"
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
           fi
           PRERELEASE_ARGS=()
           if [[ "$VERSION" == *-* ]]; then
