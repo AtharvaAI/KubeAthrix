@@ -149,13 +149,13 @@ jobs:
           helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.oidc.issuerURL=https://issuer.example.test --set auth.oidc.clientID=kubeathrix > rendered-secure.yaml
           helm template kubeathrix charts/kubeathrix -n kubeathrix --include-crds --set auth.oidc.issuerURL=https://issuer.example.test --set auth.oidc.clientID=kubeathrix --set chaos.execution.enabled=true --set engines.chaosMesh.enabled=true --set 'chaos.namespaceAllowlist={sandbox}' > rendered-chaos.yaml
 
-      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           scan-type: config
           scan-ref: rendered-secure.yaml
           severity: HIGH,CRITICAL
           exit-code: "1"
-      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           scan-type: config
           scan-ref: rendered-chaos.yaml
@@ -189,7 +189,7 @@ jobs:
         with:
           image: kubeathrix/${{ matrix.component }}:release-candidate
           output-file: ${{ matrix.component }}.spdx.json
-      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: kubeathrix/${{ matrix.component }}:release-candidate
           severity: HIGH,CRITICAL
@@ -344,7 +344,7 @@ jobs:
         run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
 
       - name: Scan published image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           severity: HIGH,CRITICAL

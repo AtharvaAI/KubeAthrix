@@ -100,13 +100,13 @@ jobs:
       - uses: docker://ghcr.io/yannh/kubeconform:v0.7.0@sha256:85dbef6b4b312b99133decc9c6fc9495e9fc5f92293d4ff3b7e1b30f5611823c
         with:
           args: "-strict -summary -ignore-missing-schemas rendered.yaml rendered-secure.yaml rendered-chaos.yaml"
-      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           scan-type: config
           scan-ref: rendered-secure.yaml
           severity: HIGH,CRITICAL
           exit-code: "1"
-      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           scan-type: config
           scan-ref: rendered-chaos.yaml
@@ -165,7 +165,7 @@ jobs:
         with:
           image: kubeathrix/${{ matrix.component }}:ci
           output-file: ${{ matrix.component }}.spdx.json
-      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: kubeathrix/${{ matrix.component }}:ci
           severity: HIGH,CRITICAL
