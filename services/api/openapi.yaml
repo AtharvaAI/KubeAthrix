@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: KubeAthrix API
   # x-release-please-start-version
-  version: 0.2.1
+  version: 0.2.2
   # x-release-please-end
   summary: Authenticated API for Kubernetes findings and typed remediation proposals.
   license:
