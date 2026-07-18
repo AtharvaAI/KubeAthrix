@@ -54,6 +54,7 @@ spec:
       labels:
         {{- include "kubeathrix.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
     spec:
       serviceAccountName: {{ include "kubeathrix.fullname" . }}-api
       securityContext:

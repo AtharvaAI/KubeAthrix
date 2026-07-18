@@ -92,9 +92,10 @@ helm upgrade --install kubeathrix ./charts/kubeathrix `
 kubectl -n kubeathrix port-forward svc/kubeathrix-console 8080:80
 ```
 
-`--reset-values` applies the image tags from the current chart on upgrades, so
-pull the latest `main` branch before running this command. Release Please updates
-the chart version and all three component image tags together for every release.
+`--reset-values` applies the chart's rolling `api-latest`, `console-latest`, and
+`operator-latest` tags on upgrades. Stable releases update those aliases only
+after verification succeeds, and the new chart version triggers a pod rollout.
+Pin versioned tags or signed digests instead for production deployments.
 
 ### Production checklist
 

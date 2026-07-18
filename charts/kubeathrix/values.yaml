@@ -16,19 +16,20 @@ rollout:
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "api-0.2.2" # x-release-please-version
+    # Stable releases publish this rolling alias after verification succeeds.
+    tag: "api-latest"
     digest: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "console-0.2.2" # x-release-please-version
+    tag: "console-latest"
     digest: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: "operator-0.2.2" # x-release-please-version
+    tag: "operator-latest"
     digest: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
 
 service:
   type: ClusterIP

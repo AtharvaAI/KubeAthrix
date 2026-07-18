@@ -178,24 +178,26 @@ service:
   type: ClusterIP
 ```
 
-The current preview chart references versioned Docker Hub tags. A production
-release is not declared until the release pipeline also publishes and verifies
-image digests, signatures, SBOMs, and provenance.
+The chart defaults to the latest verified stable release through rolling Docker
+Hub tags. The release pipeline updates these aliases only after publishing and
+verifying image digests, signatures, SBOMs, and provenance. Pin versioned tags
+or signed digests for production deployments.
 
-<!-- x-release-please-start-version -->
 ```yaml
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: api-0.2.2
+    tag: api-latest
+    pullPolicy: Always
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: console-0.2.2
+    tag: console-latest
+    pullPolicy: Always
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: operator-0.2.2
+    tag: operator-latest
+    pullPolicy: Always
 ```
-<!-- x-release-please-end -->
 
 ## Access
 

@@ -27,10 +27,6 @@
     },
     {
       "type": "generic",
-      "path": "charts/kubeathrix/values.yaml"
-    },
-    {
-      "type": "generic",
       "path": "services/api/openapi.yaml"
     },
     {

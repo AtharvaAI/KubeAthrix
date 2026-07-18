@@ -47,7 +47,17 @@ docker compose -f deploy/docker-compose.images.yaml up
 
 ## Install Published Images With Helm
 
-The chart defaults to the pinned published image tags.
+The chart defaults to the rolling tags for the latest verified stable release.
+
+```powershell
+helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
+  --set auth.insecureDevelopmentMode=true
+```
+
+To pin a specific release instead:
 
 <!-- x-release-please-start-version -->
 ```powershell
@@ -56,30 +66,15 @@ helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-nam
   --reset-values `
   --atomic --cleanup-on-fail --timeout 10m `
   --set auth.insecureDevelopmentMode=true `
-  --set image.api.repository=docker.io/prashantdey/kubeathrix `
   --set image.api.tag=api-0.2.2 `
-  --set image.console.repository=docker.io/prashantdey/kubeathrix `
+  --set image.api.pullPolicy=IfNotPresent `
   --set image.console.tag=console-0.2.2 `
-  --set image.operator.repository=docker.io/prashantdey/kubeathrix `
-  --set image.operator.tag=operator-0.2.2
+  --set image.console.pullPolicy=IfNotPresent `
+  --set image.operator.tag=operator-0.2.2 `
+  --set image.operator.pullPolicy=IfNotPresent
 ```
 <!-- x-release-please-end -->
 
-To track the most recent stable release:
-
-```powershell
-helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
-  --dependency-update `
-  --reset-values `
-  --atomic --cleanup-on-fail --timeout 10m `
-  --set auth.insecureDevelopmentMode=true `
-  --set-string rollout.restartToken=$(Get-Date -Format yyyyMMddHHmmss) `
-  --set image.api.tag=api-latest `
-  --set image.api.pullPolicy=Always `
-  --set image.console.tag=console-latest `
-  --set image.console.pullPolicy=Always `
-  --set image.operator.tag=operator-latest `
-  --set image.operator.pullPolicy=Always
-```
-
-Use pinned version tags for production environments. Use `*-latest` only for demos, sandboxes, or intentionally rolling environments.
+Use pinned version tags or signed digests for production environments. The
+default `*-latest` tags are intended for demos, sandboxes, or intentionally
+rolling environments.

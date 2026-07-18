@@ -5,25 +5,34 @@ const consolePackage = JSON.parse(readFileSync("apps/console/package.json", "utf
 const releaseManifest = JSON.parse(readFileSync(".release-please-manifest.json", "utf8"));
 const version = rootPackage.version;
 const checks = [
-  ["console package", consolePackage.version],
-  ["release manifest", releaseManifest["."]],
-  ["Helm chart", match("charts/kubeathrix/Chart.yaml", /^version:\s*([^\s]+)$/m)],
-  ["Helm appVersion", match("charts/kubeathrix/Chart.yaml", /^appVersion:\s*([^\s]+)$/m)],
-  ["Helm API image tag", match("charts/kubeathrix/values.yaml", /^\s{4}tag:\s*["']?api-([^"'#\s]+)["']?\s*(?:#.*)?$/m)],
-  ["Helm console image tag", match("charts/kubeathrix/values.yaml", /^\s{4}tag:\s*["']?console-([^"'#\s]+)["']?\s*(?:#.*)?$/m)],
-  ["Helm operator image tag", match("charts/kubeathrix/values.yaml", /^\s{4}tag:\s*["']?operator-([^"'#\s]+)["']?\s*(?:#.*)?$/m)],
-  ["OpenAPI", match("services/api/openapi.yaml", /^\s{2}version:\s*([^\s]+)$/m)],
-	["API metrics", match("services/api/internal/httpapi/metrics.go", /kubeathrix_api_build_info\{version="([^"]+)/)],
-	["API telemetry", match("services/api/cmd/kubeathrix-api/main.go", /ServiceVersion:\s*"([^"]+)/)],
+  ["console package", version, consolePackage.version],
+  ["release manifest", version, releaseManifest["."]],
+  ["Helm chart", version, match("charts/kubeathrix/Chart.yaml", /^version:\s*([^\s]+)$/m)],
+  ["Helm appVersion", version, match("charts/kubeathrix/Chart.yaml", /^appVersion:\s*([^\s]+)$/m)],
+  ["Helm API image tag", "api-latest", imageValue("api", "tag")],
+  ["Helm API pull policy", "Always", imageValue("api", "pullPolicy")],
+  ["Helm console image tag", "console-latest", imageValue("console", "tag")],
+  ["Helm console pull policy", "Always", imageValue("console", "pullPolicy")],
+  ["Helm operator image tag", "operator-latest", imageValue("operator", "tag")],
+  ["Helm operator pull policy", "Always", imageValue("operator", "pullPolicy")],
+  ["OpenAPI", version, match("services/api/openapi.yaml", /^\s{2}version:\s*([^\s]+)$/m)],
+	["API metrics", version, match("services/api/internal/httpapi/metrics.go", /kubeathrix_api_build_info\{version="([^"]+)/)],
+	["API telemetry", version, match("services/api/cmd/kubeathrix-api/main.go", /ServiceVersion:\s*"([^"]+)/)],
 ];
 
-const failures = checks.filter(([, actual]) => actual !== version);
+const failures = checks.filter(([, expected, actual]) => actual !== expected);
 if (failures.length) {
-  for (const [name, actual] of failures) console.error(`${name}: expected ${version}, got ${actual}`);
+  for (const [name, expected, actual] of failures) console.error(`${name}: expected ${expected}, got ${actual}`);
   process.exit(1);
 }
-console.log(`All release surfaces use ${version}`);
+console.log(`All release surfaces use ${version}; Helm defaults track the latest stable images`);
 
 function match(path, expression) {
   return expression.exec(readFileSync(path, "utf8"))?.[1]?.replaceAll('"', "") ?? "missing";
+}
+
+function imageValue(component, key) {
+  const values = readFileSync("charts/kubeathrix/values.yaml", "utf8");
+  const block = new RegExp(`^  ${component}:\\r?\\n((?:    .*\\r?\\n)+)`, "m").exec(values)?.[1] ?? "";
+  return new RegExp(`^    ${key}:\\s*["']?([^"'#\\s]+)`, "m").exec(block)?.[1] ?? "missing";
 }
