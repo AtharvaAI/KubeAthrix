@@ -31,6 +31,18 @@
     },
     {
       "type": "generic",
+      "path": "services/api/openapi.yaml"
+    },
+    {
+      "type": "generic",
+      "path": "services/api/internal/httpapi/metrics.go"
+    },
+    {
+      "type": "generic",
+      "path": "services/api/cmd/kubeathrix-api/main.go"
+    },
+    {
+      "type": "generic",
       "path": "README.md"
     },
     {

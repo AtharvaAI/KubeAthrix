@@ -26,7 +26,7 @@ func (s *Server) prometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	fmt.Fprintln(w, "# HELP kubeathrix_api_build_info Static API build information.")
 	fmt.Fprintln(w, "# TYPE kubeathrix_api_build_info gauge")
-	fmt.Fprintln(w, `kubeathrix_api_build_info{version="0.2.0"} 1`)
+	fmt.Fprintln(w, `kubeathrix_api_build_info{version="0.2.1"} 1`) // x-release-please-version
 	fmt.Fprintln(w, "# HELP kubeathrix_http_requests_total HTTP requests grouped by response status.")
 	fmt.Fprintln(w, "# TYPE kubeathrix_http_requests_total counter")
 	for _, status := range statuses {

@@ -187,7 +187,7 @@ func main() {
 		Insecure:       os.Getenv("KUBEATHRIX_OTEL_INSECURE") == "true",
 		SampleRatio:    traceSampleRatio,
 		ExportTimeout:  traceExportTimeout,
-		ServiceVersion: "0.2.0",
+		ServiceVersion: "0.2.1", // x-release-please-version
 	})
 	if err != nil {
 		logger.Error("OpenTelemetry tracing configuration failed closed", "error", err)
