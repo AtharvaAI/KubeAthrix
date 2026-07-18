@@ -1,13 +1,13 @@
 {
   "name": "kubeathrix",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Kubernetes guardrail and remediation control plane.",
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-	"test:go": "go test ./services/api/... ./operator/... ./pkg/actioncatalog/...",
-	"helm:lint": "helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true"
+    "test:go": "go test ./services/api/... ./operator/... ./pkg/actioncatalog/...",
+    "helm:lint": "helm lint charts/kubeathrix --set auth.insecureDevelopmentMode=true"
   },
   "engines": {
     "node": ">=22"
