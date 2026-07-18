@@ -47,7 +47,9 @@ docker compose -f deploy/docker-compose.images.yaml up
 
 ## Install Published Images With Helm
 
-The chart defaults to the rolling tags for the latest verified stable release.
+The chart defaults to image tags that match the chart release. For example,
+chart `<version>` defaults to `api-<version>`, `console-<version>`, and
+`operator-<version>`.
 
 ```powershell
 helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-namespace `
@@ -57,7 +59,7 @@ helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-nam
   --set auth.insecureDevelopmentMode=true
 ```
 
-To pin a specific release instead:
+To override to a specific release:
 
 <!-- x-release-please-start-version -->
 ```powershell
@@ -75,6 +77,6 @@ helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-nam
 ```
 <!-- x-release-please-end -->
 
-Use pinned version tags or signed digests for production environments. The
-default `*-latest` tags are intended for demos, sandboxes, or intentionally
-rolling environments.
+Use signed digests for production environments when you need immutable runtime
+inputs. The `*-latest` aliases are available for demos, sandboxes, or
+intentionally rolling environments.

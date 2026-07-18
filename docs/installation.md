@@ -178,26 +178,28 @@ service:
   type: ClusterIP
 ```
 
-The chart defaults to the latest verified stable release through rolling Docker
-Hub tags. The release pipeline updates these aliases only after publishing and
-verifying image digests, signatures, SBOMs, and provenance. Pin versioned tags
-or signed digests for production deployments.
+The chart defaults to image tags that match the chart release. Release Please
+updates these defaults with the chart, so installing chart `<version>` runs the
+same-version API, console, and operator images. Pin signed digests for
+production deployments when you need immutable runtime inputs.
 
+<!-- x-release-please-start-version -->
 ```yaml
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: api-latest
-    pullPolicy: Always
+    tag: api-0.2.2
+    pullPolicy: IfNotPresent
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: console-latest
-    pullPolicy: Always
+    tag: console-0.2.2
+    pullPolicy: IfNotPresent
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: operator-latest
-    pullPolicy: Always
+    tag: operator-0.2.2
+    pullPolicy: IfNotPresent
 ```
+<!-- x-release-please-end -->
 
 ## Access
 
