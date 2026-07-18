@@ -216,7 +216,8 @@ async function mockApi(page: Page) {
   );
 }
 
-test("dashboard and fix center are usable on desktop", async ({ page }) => {
+test("dashboard and fix center are usable on desktop", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Desktop-only workflow.");
   await mockApi(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
@@ -227,7 +228,8 @@ test("dashboard and fix center are usable on desktop", async ({ page }) => {
   await expect(page.getByText("Find, explain, fix, verify, prove")).toBeVisible();
 });
 
-test("mobile layout keeps navigation and text accessible", async ({ page }) => {
+test("mobile layout keeps navigation and text accessible", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "Mobile-only layout check.");
   await mockApi(page);
   await page.setViewportSize({ width: 390, height: 840 });
   await page.goto("/");
