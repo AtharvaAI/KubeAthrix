@@ -2,19 +2,19 @@ apiVersion: v2
 name: kubeathrix
 description: Kubernetes guardrail and remediation control plane.
 type: application
-version: 0.2.0
-appVersion: 0.2.0
+version: 0.2.1
+appVersion: 0.2.1
 kubeVersion: '>=1.28.0-0'
 dependencies:
   - name: trivy-operator
-    version: '0.34.0'
+    version: 0.34.0
     repository: https://aquasecurity.github.io/helm-charts/
     condition: engines.trivyOperator.enabled
   - name: kyverno
-    version: '3.8.1'
+    version: 3.8.1
     repository: https://kyverno.github.io/kyverno/
     condition: engines.kyverno.enabled
   - name: kubescape-operator
-    version: '1.40.2'
+    version: 1.40.2
     repository: https://kubescape.github.io/helm-charts/
     condition: engines.kubescape.enabled
