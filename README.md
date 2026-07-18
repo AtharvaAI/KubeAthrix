@@ -85,9 +85,16 @@ isolated local cluster with no sensitive data or network exposure.
 ```powershell
 helm upgrade --install kubeathrix ./charts/kubeathrix `
   --namespace kubeathrix --create-namespace `
+  --dependency-update `
+  --reset-values `
+  --atomic --cleanup-on-fail --timeout 10m `
   --set auth.insecureDevelopmentMode=true
 kubectl -n kubeathrix port-forward svc/kubeathrix-console 8080:80
 ```
+
+`--reset-values` applies the image tags from the current chart on upgrades, so
+pull the latest `main` branch before running this command. Release Please updates
+the chart version and all three component image tags together for every release.
 
 ### Production checklist
 
