@@ -66,10 +66,18 @@ export interface Dashboard {
   remediationByState: Record<string, number>;
   protectedNamespaces: number;
   bundledEnginesOnline: number;
+  agent?: AgentStatus;
   cluster: ClusterInventory;
   scan: ScanSummary;
   compliance: ComplianceControl[];
   experiments: ChaosExperiment[];
+}
+
+export interface AgentStatus {
+  autonomyMode: string;
+  uptimeSeconds: number;
+  actionsLast24h: number;
+  runtimeIdentity: string;
 }
 
 export interface ClusterInventory {
@@ -390,8 +398,7 @@ export interface ManagedResourceSnapshot {
   warnings: ManagedResourceWarning[];
 }
 
-export interface ModelProviderSettings {
-  providers: Array<{
+export interface ModelProvider {
     name: string;
     type: string;
     model: string;
@@ -404,5 +411,17 @@ export interface ModelProviderSettings {
       path: string;
       key: string;
     };
-  }>;
+}
+
+export interface ModelProviderSettings {
+  providers: ModelProvider[];
+}
+
+export interface ModelProviderSecretReference {
+  provider: string;
+  namespace: string;
+  secretRef: {
+    name: string;
+    key: string;
+  };
 }

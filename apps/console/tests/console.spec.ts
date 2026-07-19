@@ -233,7 +233,7 @@ test("mobile layout keeps navigation and text accessible", async ({ page }, test
   await mockApi(page);
   await page.setViewportSize({ width: 390, height: 840 });
   await page.goto("/");
-  await expect(page.getByText("Guardrail control plane")).toBeVisible();
+  await expect(page.getByText("In-cluster agent · v1.7.2")).toBeVisible();
   await page.getByRole("button", { name: /Integrations/ }).click();
   await expect(page.getByRole("heading", { name: "Integrations" })).toBeVisible();
   await expect(page.getByText("Trivy Operator")).toBeVisible();
@@ -246,7 +246,7 @@ test("OIDC Authorization Code with PKCE authenticates against the real API", asy
   await page.getByRole("button", { name: "Sign in with OIDC" }).click();
 
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await expect(page.getByText("Cluster cockpit")).toBeVisible();
+  await expect(page.getByText(/In-cluster defender/)).toBeVisible();
   const authenticatedHealth = await page.evaluate(async () => {
     const token = sessionStorage.getItem("kubeathrix.oidc.access_token");
     const response = await fetch("/api/health", { headers: { Authorization: `Bearer ${token}` } });

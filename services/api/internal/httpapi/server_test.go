@@ -43,6 +43,19 @@ func jsonRequest(method, path string, body io.Reader) *http.Request {
 
 var testRequestSequence atomic.Uint64
 
+type recordingProviderSecretWriter struct {
+	namespace string
+	name      string
+	key       string
+	value     []byte
+}
+
+func (w *recordingProviderSecretWriter) Upsert(_ context.Context, namespace, name, key string, value []byte) error {
+	w.namespace, w.name, w.key = namespace, name, key
+	w.value = append([]byte(nil), value...)
+	return nil
+}
+
 func testFindings(now time.Time) []core.Finding {
 	return []core.Finding{
 		{
@@ -560,6 +573,58 @@ func TestModelProviderRejectsInlineSecrets(t *testing.T) {
 
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("expected strict decoder to reject inline apiKey, got %d", res.Code)
+	}
+}
+
+func TestModelProviderSecretWriteIsAuditedWithoutEchoingValue(t *testing.T) {
+	repo := store.NewMemoryStore()
+	writer := &recordingProviderSecretWriter{}
+	handler := httpapi.NewServer(repo, httpapi.Config{
+		InsecureDevAuth: true, AllowMemoryWorkflows: true,
+		ProviderSecrets: writer, ProviderSecretNS: "kubeathrix",
+	}).Routes()
+	request := jsonRequest(http.MethodPut, "/api/settings/model-providers/primary/secret", bytes.NewBufferString(`{"secretName":"provider-primary","key":"api-key","value":"top-secret-value"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "top-secret-value") {
+		t.Fatal("secret value must never be returned")
+	}
+	if writer.namespace != "kubeathrix" || writer.name != "provider-primary" || writer.key != "api-key" || string(writer.value) != "top-secret-value" {
+		t.Fatalf("unexpected secret write: %#v", writer)
+	}
+	events, err := repo.ListAuditEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Action != "model-provider.secret.rotated" || events[0].Subject != "primary" || strings.Contains(events[0].Message, "top-secret-value") {
+		t.Fatalf("unexpected audit event: %#v", events)
+	}
+}
+
+func TestDashboardReturnsAPIBackedAgentStatus(t *testing.T) {
+	repo := store.NewMemoryStore()
+	if err := repo.RecordAuditEvent(context.Background(), core.AuditEvent{Actor: "operator", Action: "plan.created", Subject: "plan-1", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.NewServer(repo, httpapi.Config{
+		InsecureDevAuth: true, AllowMemoryWorkflows: true,
+		AutonomyMode: "guarded-auto", RuntimeIdentity: "sa/kubeathrix-api",
+	}).Routes()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dashboard", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	var dashboard core.Dashboard
+	if err := json.NewDecoder(response.Body).Decode(&dashboard); err != nil {
+		t.Fatal(err)
+	}
+	if dashboard.Agent.AutonomyMode != "guarded-auto" || dashboard.Agent.RuntimeIdentity != "sa/kubeathrix-api" || dashboard.Agent.ActionsLast24H != 1 || dashboard.Agent.UptimeSeconds < 0 {
+		t.Fatalf("unexpected agent status: %#v", dashboard.Agent)
 	}
 }
 

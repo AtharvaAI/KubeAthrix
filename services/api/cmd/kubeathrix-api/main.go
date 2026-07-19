@@ -168,6 +168,16 @@ func main() {
 		authenticator = verifier
 	}
 
+	var providerSecrets httpapi.ProviderSecretWriter
+	if boolEnv("KUBEATHRIX_PROVIDER_SECRET_MANAGEMENT", true) {
+		secretStore, err := cluster.NewProviderSecretStore()
+		if err != nil {
+			logger.Warn("provider secret management disabled", "error", err)
+		} else {
+			providerSecrets = secretStore
+		}
+	}
+
 	tracingEnabled := os.Getenv("KUBEATHRIX_OTEL_TRACING_ENABLED") == "true"
 	traceSampleRatio, traceExportTimeout := 0.1, 5*time.Second
 	if tracingEnabled {
@@ -194,12 +204,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	clusterID := envOrDefault("KUBEATHRIX_CLUSTER_ID", "default")
 	server := httpapi.NewServer(repository, httpapi.Config{
 		InsecureDevAuth:      insecureDevAuth,
 		OIDCIssuerURL:        os.Getenv("OIDC_ISSUER_URL"),
 		OIDCClientID:         os.Getenv("OIDC_CLIENT_ID"),
 		Authenticator:        authenticator,
-		ClusterID:            envOrDefault("KUBEATHRIX_CLUSTER_ID", "default"),
+		ClusterID:            clusterID,
 		MaxRequestBytes:      int64Env("KUBEATHRIX_MAX_REQUEST_BYTES", 1<<20),
 		RateLimitPerMinute:   intEnv("KUBEATHRIX_RATE_LIMIT_PER_MINUTE", 120),
 		Logger:               logger,
@@ -210,6 +221,10 @@ func main() {
 		AdapterManager:       adapterManager,
 		ManagedResources:     managedResourceSource,
 		AIAdvisor:            aiAdvisor,
+		ProviderSecrets:      providerSecrets,
+		ProviderSecretNS:     envOrDefault("POD_NAMESPACE", "kubeathrix"),
+		AutonomyMode:         envOrDefault("KUBEATHRIX_AUTONOMY_MODE", "recommend"),
+		RuntimeIdentity:      envOrDefault("KUBEATHRIX_RUNTIME_IDENTITY", "api/"+clusterID),
 		RiskConfig:           mustRiskConfig(logger, os.Getenv("KUBEATHRIX_RISK_CONFIG_JSON")),
 		FindingExpiry:        durationEnv("KUBEATHRIX_FINDING_EXPIRY", 24*time.Hour),
 	})

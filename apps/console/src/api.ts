@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AuditEvent, ChaosExperiment, ChaosExperimentRun, Dashboard, EvidenceBundle, Finding, FindingException, FindingStatus, Integration, IntegrationHealth, ManagedResourceSnapshot, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationPreview, RemediationRun } from "./types";
+import type { ApprovalRequest, AuditEvent, ChaosExperiment, ChaosExperimentRun, Dashboard, EvidenceBundle, Finding, FindingException, FindingStatus, Integration, IntegrationHealth, ManagedResourceSnapshot, ModelProviderSecretReference, ModelProviderSettings, RemediationDiff, RemediationPlan, RemediationPreview, RemediationRun } from "./types";
 import { accessToken } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -174,4 +174,18 @@ export async function abortChaosRun(id: string, reason: string): Promise<ChaosEx
 
 export async function loadModelProviders(): Promise<ModelProviderSettings> {
   return request<ModelProviderSettings>("/settings/model-providers");
+}
+
+export async function updateModelProviders(settings: ModelProviderSettings): Promise<ModelProviderSettings> {
+  return request<ModelProviderSettings>("/settings/model-providers", {
+    method: "PUT",
+    body: JSON.stringify(settings)
+  });
+}
+
+export async function storeModelProviderSecret(provider: string, secretName: string, key: string, value: string): Promise<ModelProviderSecretReference> {
+  return request<ModelProviderSecretReference>(`/settings/model-providers/${encodeURIComponent(provider)}/secret`, {
+    method: "PUT",
+    body: JSON.stringify({ secretName, key, value })
+  });
 }

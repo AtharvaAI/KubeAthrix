@@ -997,6 +997,19 @@ func (s *Store) ListAuditEvents(ctx context.Context) ([]core.AuditEvent, error) 
 	return events, nil
 }
 
+func (s *Store) RecordAuditEvent(ctx context.Context, event core.AuditEvent) error {
+	if strings.TrimSpace(event.Actor) == "" || strings.TrimSpace(event.Action) == "" || strings.TrimSpace(event.Subject) == "" {
+		return fmt.Errorf("%w: audit actor, action, and subject are required", store.ErrInvalid)
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = s.clock().UTC()
+	}
+	if event.ID == "" {
+		event.ID = fmt.Sprintf("audit-%d", event.CreatedAt.UnixNano())
+	}
+	return s.saveAuditEvent(ctx, event)
+}
+
 func (s *Store) CreateChaosRun(ctx context.Context, run core.ChaosExperimentRun, actor, auditAction string) (core.ChaosExperimentRun, error) {
 	if run.ID == "" || run.Version != 0 {
 		return core.ChaosExperimentRun{}, fmt.Errorf("%w: new chaos run must have an id and version zero", store.ErrInvalid)

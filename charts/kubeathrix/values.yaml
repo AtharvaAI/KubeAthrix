@@ -45,6 +45,11 @@ service:
 
 api:
   clusterID: default
+  # Dashboard label for the live agent behavior configured in this release.
+  autonomyMode: recommend
+  # Temporarily allows administrators to create or rotate model-provider keys
+  # as namespace-scoped Kubernetes Secrets from Provider Management.
+  providerSecretManagement: true
   maxRequestBytes: 1048576
   rateLimitPerMinute: 120
   # Open or in-review findings become expired when their newest evidence is

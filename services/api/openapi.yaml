@@ -78,7 +78,7 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
         "200":
-          description: Dashboard metrics, cluster inventory, compliance controls, and experiment templates
+          description: Dashboard metrics, live agent status, cluster inventory, compliance controls, and experiment templates
   /api/findings:
     get:
       operationId: getApiFindings
@@ -556,6 +556,27 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "200":
           description: Provider settings updated
+  /api/settings/model-providers/{name}/secret:
+    put:
+      operationId: putApiSettingsModelProviderSecret
+      summary: Create or rotate a provider key in the KubeAthrix namespace
+      description: Administrator-only temporary provider-secret management. The raw value is written to Kubernetes and is never returned or saved in provider settings.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelProviderSecretWrite"
+      responses:
+        "200":
+          description: Secret created or rotated; response contains only its reference
+        "429":
+          $ref: "#/components/responses/RateLimited"
 components:
   parameters:
     IdempotencyKey:
@@ -790,6 +811,14 @@ components:
                   store: { type: string }
                   path: { type: string }
                   key: { type: string }
+    ModelProviderSecretWrite:
+      type: object
+      required: [secretName, key, value]
+      additionalProperties: false
+      properties:
+        secretName: { type: string, minLength: 1 }
+        key: { type: string, minLength: 1 }
+        value: { type: string, minLength: 1, maxLength: 65536, format: password, writeOnly: true }
   responses:
     RateLimited:
       description: Request rate limit exceeded

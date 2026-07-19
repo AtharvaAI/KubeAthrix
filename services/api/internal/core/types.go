@@ -144,10 +144,18 @@ type Dashboard struct {
 	RemediationByState   map[string]int      `json:"remediationByState"`
 	ProtectedNamespaces  int                 `json:"protectedNamespaces"`
 	BundledEnginesOnline int                 `json:"bundledEnginesOnline"`
+	Agent                AgentStatus         `json:"agent"`
 	Cluster              ClusterInventory    `json:"cluster"`
 	Scan                 ScanSummary         `json:"scan"`
 	Compliance           []ComplianceControl `json:"compliance"`
 	Experiments          []ChaosExperiment   `json:"experiments"`
+}
+
+type AgentStatus struct {
+	AutonomyMode    string `json:"autonomyMode"`
+	UptimeSeconds   int64  `json:"uptimeSeconds"`
+	ActionsLast24H  int    `json:"actionsLast24h"`
+	RuntimeIdentity string `json:"runtimeIdentity"`
 }
 
 type ClusterInventory struct {

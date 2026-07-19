@@ -44,6 +44,7 @@ function dashboardPayload() {
     remediationByState: { approval_required: 1 },
     protectedNamespaces: 1,
     bundledEnginesOnline: 1,
+	agent: { autonomyMode: "guarded-auto", uptimeSeconds: 7330, actionsLast24h: 17, runtimeIdentity: "sa/kubeathrix-api" },
     cluster: {
       nodes: 2,
       readyNodes: 2,
@@ -177,8 +178,12 @@ function mockApi(modelSettingsAllowed = true, managedResourcesAllowed = true) {
         if (!managedResourcesAllowed) return Promise.resolve(Response.json({ error: { code: "permission_denied", message: "cluster scope required" } }, { status: 403 }));
         return Promise.resolve(Response.json(managedResourcePayload()));
       }
+      if (url.endsWith("/api/settings/model-providers/primary/secret") && method === "PUT") {
+        return Promise.resolve(Response.json({ provider: "primary", namespace: "kubeathrix", secretRef: { name: "kubeathrix-llm", key: "api-key" } }));
+      }
       if (url.endsWith("/api/settings/model-providers")) {
         if (!modelSettingsAllowed) return Promise.resolve(Response.json({ error: { code: "permission_denied", message: "insufficient permissions" } }, { status: 403 }));
+		if (method === "PUT") return Promise.resolve(Response.json(JSON.parse(String(init?.body))));
         return Promise.resolve(Response.json({ providers: [{ name: "primary", type: "openai-compatible", model: "gpt-5", apiKeySecretRef: { name: "kubeathrix-llm", key: "api-key" } }] }));
       }
 	  if (url.endsWith("/api/experiments")) return Promise.resolve(Response.json({ items: dashboardPayload().experiments }));
@@ -219,7 +224,42 @@ describe("KubeAthrix console", () => {
     expect(await screen.findByText("Correlated cluster risk")).toBeInTheDocument();
     expect(await screen.findByText("KubeAthrix")).toBeInTheDocument();
     expect(await screen.findByText("Open critical")).toBeInTheDocument();
+	expect(screen.getAllByText("Guarded auto").length).toBeGreaterThan(0);
+	expect(screen.getByText("2h 2m")).toBeInTheDocument();
+	expect(screen.getByText("17")).toBeInTheDocument();
   });
+
+	it("pauses the live feed and creates a dashboard plan only after confirmation", async () => {
+		mockApi();
+		const user = userEvent.setup();
+		render(<App />);
+
+		await user.click(await screen.findByRole("button", { name: "Live · pause" }));
+		expect(screen.getByRole("button", { name: "Paused · resume" })).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Plan fix" }));
+		expect(screen.getByRole("dialog", { name: "Generate a remediation plan?" })).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Generate plan" }));
+
+		expect(await screen.findByText("Find, explain, fix, verify, prove")).toBeInTheDocument();
+	});
+
+	it("rotates a provider key without saving the raw value in provider settings", async () => {
+		mockApi();
+		const user = userEvent.setup();
+		render(<App />);
+
+		await user.click(await screen.findByRole("button", { name: "Settings" }));
+		await user.click(screen.getByRole("button", { name: "Rotate" }));
+		await user.type(await screen.findByLabelText("API key (never returned)"), "secret-value");
+		await user.click(screen.getByRole("button", { name: "Rotate key" }));
+
+		expect(await screen.findByText(/was created or rotated and its reference was saved/i)).toBeInTheDocument();
+		const calls = vi.mocked(fetch).mock.calls;
+		const secretCall = calls.find(([input]) => input.toString().endsWith("/api/settings/model-providers/primary/secret"));
+		const settingsCall = calls.find(([input, init]) => input.toString().endsWith("/api/settings/model-providers") && init?.method === "PUT");
+		expect(String(secretCall?.[1]?.body)).toContain("secret-value");
+		expect(String(settingsCall?.[1]?.body)).not.toContain("secret-value");
+	});
 
   it("creates a typed remediation plan from the findings workflow", async () => {
     mockApi();
@@ -252,6 +292,29 @@ describe("KubeAthrix console", () => {
     expect(await screen.findByText("Execution requested")).toBeInTheDocument();
   });
 
+  it("renders the template-native structure across the remaining console routes", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Runtime" }));
+    expect(await screen.findByRole("heading", { name: "Runtime signal stream" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Policy" }));
+    expect(await screen.findByRole("heading", { name: "Control posture" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Guardrail coverage" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Experiments" }));
+    expect(await screen.findByRole("heading", { name: "Bounded chaos experiments" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Latest run" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Audit" }));
+    expect(await screen.findByRole("heading", { name: "Audit trail" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Integrations" }));
+    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeInTheDocument();
+  });
+
   it("keeps viewer data usable when administrator-only settings are denied", async () => {
     mockApi(false);
     render(<App />);
@@ -270,7 +333,7 @@ describe("KubeAthrix console", () => {
     expect(await screen.findByText("Role/checkout-role")).toBeInTheDocument();
     expect(screen.getByText("platform/iam/checkout-role.yaml")).toBeInTheDocument();
     expect(screen.getByText("GitOps")).toBeInTheDocument();
-    expect(screen.getByText(/every managed-resource change remains human-reviewed and proposal-only/i)).toBeInTheDocument();
+    expect(screen.getByText(/every managed-resource change is human-reviewed and proposal-only/i)).toBeInTheDocument();
   });
 
   it("keeps the console usable when managed-resource inventory is forbidden", async () => {

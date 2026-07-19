@@ -56,6 +56,7 @@ type Repository interface {
 	Approve(ctx context.Context, approvalID, actor, reason string) (core.ApprovalRequest, error)
 	Reject(ctx context.Context, approvalID, actor, reason string) (core.ApprovalRequest, error)
 	ListAuditEvents(ctx context.Context) ([]core.AuditEvent, error)
+	RecordAuditEvent(ctx context.Context, event core.AuditEvent) error
 	CreateChaosRun(ctx context.Context, run core.ChaosExperimentRun, actor, auditAction string) (core.ChaosExperimentRun, error)
 	GetChaosRun(ctx context.Context, id string) (core.ChaosExperimentRun, error)
 	ListChaosRuns(ctx context.Context) ([]core.ChaosExperimentRun, error)
@@ -742,6 +743,26 @@ func (s *MemoryStore) ListAuditEvents(ctx context.Context) ([]core.AuditEvent, e
 		return events[i].CreatedAt.After(events[j].CreatedAt)
 	})
 	return events, nil
+}
+
+func (s *MemoryStore) RecordAuditEvent(ctx context.Context, event core.AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(event.Actor) == "" || strings.TrimSpace(event.Action) == "" || strings.TrimSpace(event.Subject) == "" {
+		return fmt.Errorf("%w: audit actor, action, and subject are required", ErrInvalid)
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = s.clock().UTC()
+	}
+	if event.ID == "" {
+		s.seq++
+		event.ID = fmt.Sprintf("audit-%06d", s.seq)
+	}
+	s.auditEvents = append(s.auditEvents, event)
+	return nil
 }
 
 func (s *MemoryStore) CreateChaosRun(ctx context.Context, run core.ChaosExperimentRun, actor, auditAction string) (core.ChaosExperimentRun, error) {

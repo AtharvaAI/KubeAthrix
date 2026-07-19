@@ -22,6 +22,7 @@ import (
 	findinglogic "github.com/atharvaai/kubeathrix/services/api/internal/findings"
 	"github.com/atharvaai/kubeathrix/services/api/internal/managedresources"
 	"github.com/atharvaai/kubeathrix/services/api/internal/store"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 type ClusterInspector interface {
@@ -78,6 +79,10 @@ type ManagedResourceSource interface {
 	Discover(ctx context.Context) (managedresources.Snapshot, error)
 }
 
+type ProviderSecretWriter interface {
+	Upsert(ctx context.Context, namespace, name, key string, value []byte) error
+}
+
 type managedResourceListResponse struct {
 	Enabled       bool                            `json:"enabled"`
 	ObservedAt    *time.Time                      `json:"observedAt,omitempty"`
@@ -103,6 +108,10 @@ type Config struct {
 	AdapterManager       AdapterManager
 	ManagedResources     ManagedResourceSource
 	AIAdvisor            AIAdvisor
+	ProviderSecrets      ProviderSecretWriter
+	ProviderSecretNS     string
+	AutonomyMode         string
+	RuntimeIdentity      string
 	RiskConfig           findinglogic.Config
 	FindingExpiry        time.Duration
 }
@@ -170,6 +179,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/experiment-runs/{id}/abort", requireRole(auth.RoleOperator, s.abortExperimentRun))
 	mux.HandleFunc("GET /api/settings/model-providers", requireRole(auth.RoleAdministrator, s.getModelProviders))
 	mux.HandleFunc("PUT /api/settings/model-providers", requireRole(auth.RoleAdministrator, s.putModelProviders))
+	mux.HandleFunc("PUT /api/settings/model-providers/{name}/secret", requireRole(auth.RoleAdministrator, s.putModelProviderSecret))
 	handler := withJSON(mux)
 	handler = s.withRateLimit(handler)
 	handler = s.withAuthentication(handler)
@@ -250,7 +260,33 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dashboard = s.enrichDashboard(r.Context(), dashboard)
+	dashboard.Agent = s.agentStatus(r.Context())
 	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (s *Server) agentStatus(ctx context.Context) core.AgentStatus {
+	mode := strings.TrimSpace(s.config.AutonomyMode)
+	if mode == "" {
+		mode = "recommend"
+	}
+	identity := strings.TrimSpace(s.config.RuntimeIdentity)
+	if identity == "" {
+		identity = "api/" + s.config.ClusterID
+	}
+	actions := 0
+	if events, err := s.repository.ListAuditEvents(ctx); err == nil {
+		cutoff := time.Now().UTC().Add(-24 * time.Hour)
+		for _, event := range events {
+			if !event.CreatedAt.Before(cutoff) {
+				actions++
+			}
+		}
+	}
+	uptime := int64(time.Since(s.metrics.startedAt).Seconds())
+	if uptime < 0 {
+		uptime = 0
+	}
+	return core.AgentStatus{AutonomyMode: mode, UptimeSeconds: uptime, ActionsLast24H: actions, RuntimeIdentity: identity}
 }
 
 func (s *Server) listFindings(w http.ResponseWriter, r *http.Request) {
@@ -1157,7 +1193,78 @@ func (s *Server) putModelProviders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err)
 		return
 	}
+	if err := s.repository.RecordAuditEvent(r.Context(), core.AuditEvent{
+		Actor: actorFromRequest(r), Action: "model-provider.settings.updated", Subject: "model-providers",
+		Message: fmt.Sprintf("Model provider references replaced (%d configured)", len(updated.Providers)), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		s.logger.Error("model provider settings audit write failed", "error", err)
+		writeError(w, http.StatusInternalServerError, errors.New("provider settings were saved but the audit event could not be recorded"))
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+type modelProviderSecretRequest struct {
+	SecretName string `json:"secretName"`
+	Key        string `json:"key"`
+	Value      string `json:"value"`
+}
+
+func (s *Server) putModelProviderSecret(w http.ResponseWriter, r *http.Request) {
+	if s.config.ProviderSecrets == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("provider secret management is not configured"))
+		return
+	}
+	providerName := strings.TrimSpace(r.PathValue("name"))
+	var request modelProviderSecretRequest
+	if !decodeStrict(w, r, &request) {
+		return
+	}
+	request.SecretName = strings.TrimSpace(request.SecretName)
+	request.Key = strings.TrimSpace(request.Key)
+	if providerName == "" || request.SecretName == "" || request.Key == "" || request.Value == "" {
+		writeError(w, http.StatusBadRequest, errors.New("provider name, secretName, key, and value are required"))
+		return
+	}
+	if len(providerName) > 128 {
+		writeError(w, http.StatusBadRequest, errors.New("provider name must be at most 128 characters"))
+		return
+	}
+	if problems := validation.IsDNS1123Subdomain(request.SecretName); len(problems) > 0 {
+		writeError(w, http.StatusBadRequest, errors.New("secretName must be a valid Kubernetes Secret name"))
+		return
+	}
+	if problems := validation.IsConfigMapKey(request.Key); len(problems) > 0 {
+		writeError(w, http.StatusBadRequest, errors.New("key must be a valid Kubernetes Secret data key"))
+		return
+	}
+	if len(request.Value) > 64<<10 {
+		writeError(w, http.StatusRequestEntityTooLarge, errors.New("provider secret value exceeds 64 KiB"))
+		return
+	}
+	namespace := strings.TrimSpace(s.config.ProviderSecretNS)
+	if namespace == "" {
+		namespace = "kubeathrix"
+	}
+	if err := s.config.ProviderSecrets.Upsert(r.Context(), namespace, request.SecretName, request.Key, []byte(request.Value)); err != nil {
+		s.logger.Error("provider secret write failed", "provider", providerName, "namespace", namespace, "secret", request.SecretName, "error", err)
+		writeError(w, http.StatusInternalServerError, errors.New("provider secret could not be stored"))
+		return
+	}
+	if err := s.repository.RecordAuditEvent(r.Context(), core.AuditEvent{
+		Actor: actorFromRequest(r), Action: "model-provider.secret.rotated", Subject: providerName,
+		Message:   fmt.Sprintf("Kubernetes Secret %s/%s key %s was created or rotated", namespace, request.SecretName, request.Key),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		s.logger.Error("provider secret audit write failed", "provider", providerName, "error", err)
+		writeError(w, http.StatusInternalServerError, errors.New("provider secret was stored but the audit event could not be recorded"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider":  providerName,
+		"namespace": namespace,
+		"secretRef": core.SecretRef{Name: request.SecretName, Key: request.Key},
+	})
 }
 
 func decodeStrict(w http.ResponseWriter, r *http.Request, target any) bool {
