@@ -188,15 +188,15 @@ production deployments when you need immutable runtime inputs.
 image:
   api:
     repository: docker.io/prashantdey/kubeathrix
-    tag: api-0.2.3
+    tag: api-0.3.0
     pullPolicy: IfNotPresent
   console:
     repository: docker.io/prashantdey/kubeathrix
-    tag: console-0.2.3
+    tag: console-0.3.0
     pullPolicy: IfNotPresent
   operator:
     repository: docker.io/prashantdey/kubeathrix
-    tag: operator-0.2.3
+    tag: operator-0.3.0
     pullPolicy: IfNotPresent
 ```
 <!-- x-release-please-end -->

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/AtharvaAI/KubeAthrix/compare/v0.2.3...v0.3.0) (2026-07-19)
+
+
+### Features
+
+* add provider secret management console ([490ab3f](https://github.com/AtharvaAI/KubeAthrix/commit/490ab3f0af8a5a5c88274427fd0a46b7537ec743))
+
 ## [0.2.3](https://github.com/AtharvaAI/KubeAthrix/compare/v0.2.2...v0.2.3) (2026-07-18)
 
 

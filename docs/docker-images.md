@@ -11,18 +11,18 @@ Each component uses a tag prefix.
 <!-- x-release-please-start-version -->
 | Component | Versioned tag | Rolling tag |
 | --- | --- | --- |
-| API | `api-0.2.3` | `api-latest` |
-| Console | `console-0.2.3` | `console-latest` |
-| Operator | `operator-0.2.3` | `operator-latest` |
+| API | `api-0.3.0` | `api-latest` |
+| Console | `console-0.3.0` | `console-latest` |
+| Operator | `operator-0.3.0` | `operator-latest` |
 <!-- x-release-please-end -->
 
 ## Pull Images
 
 <!-- x-release-please-start-version -->
 ```powershell
-docker pull docker.io/prashantdey/kubeathrix:api-0.2.3
-docker pull docker.io/prashantdey/kubeathrix:console-0.2.3
-docker pull docker.io/prashantdey/kubeathrix:operator-0.2.3
+docker pull docker.io/prashantdey/kubeathrix:api-0.3.0
+docker pull docker.io/prashantdey/kubeathrix:console-0.3.0
+docker pull docker.io/prashantdey/kubeathrix:operator-0.3.0
 ```
 <!-- x-release-please-end -->
 
@@ -68,11 +68,11 @@ helm upgrade --install kubeathrix ./charts/kubeathrix -n kubeathrix --create-nam
   --reset-values `
   --atomic --cleanup-on-fail --timeout 10m `
   --set auth.insecureDevelopmentMode=true `
-  --set image.api.tag=api-0.2.3 `
+  --set image.api.tag=api-0.3.0 `
   --set image.api.pullPolicy=IfNotPresent `
-  --set image.console.tag=console-0.2.3 `
+  --set image.console.tag=console-0.3.0 `
   --set image.console.pullPolicy=IfNotPresent `
-  --set image.operator.tag=operator-0.2.3 `
+  --set image.operator.tag=operator-0.3.0 `
   --set image.operator.pullPolicy=IfNotPresent
 ```
 <!-- x-release-please-end -->

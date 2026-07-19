@@ -49,10 +49,10 @@ Configure these repository secrets before publishing images:
 ## Image Tags
 
 <!-- x-release-please-start-version -->
-For release `v0.2.3`, the publish workflow pushes:
+For release `v0.3.0`, the publish workflow pushes:
 
 ```text
-docker.io/prashantdey/kubeathrix:api-0.2.3
+docker.io/prashantdey/kubeathrix:api-0.3.0
 docker.io/prashantdey/kubeathrix:api-0.2
 docker.io/prashantdey/kubeathrix:api-0
 docker.io/prashantdey/kubeathrix:api-latest

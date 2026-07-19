@@ -17,21 +17,21 @@ image:
   api:
     repository: docker.io/prashantdey/kubeathrix
     # x-release-please-start-version
-    tag: "api-0.2.3"
+    tag: "api-0.3.0"
     # x-release-please-end
     digest: ""
     pullPolicy: IfNotPresent
   console:
     repository: docker.io/prashantdey/kubeathrix
     # x-release-please-start-version
-    tag: "console-0.2.3"
+    tag: "console-0.3.0"
     # x-release-please-end
     digest: ""
     pullPolicy: IfNotPresent
   operator:
     repository: docker.io/prashantdey/kubeathrix
     # x-release-please-start-version
-    tag: "operator-0.2.3"
+    tag: "operator-0.3.0"
     # x-release-please-end
     digest: ""
     pullPolicy: IfNotPresent
