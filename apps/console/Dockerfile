@@ -1,4 +1,4 @@
-FROM node:24.7.0-alpine@sha256:be4d5e92ac68483ec71440bf5934865b4b7fcb93588f17a24d411d15f0204e4f AS build
+FROM node:26.5.1-alpine@sha256:233761595746769ebfdb6090f44fc7cdf818ae0ce62d2b37e0367723b9823e36 AS build
 WORKDIR /src
 RUN corepack enable
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
