@@ -1,4 +1,4 @@
-FROM golang:1.25.12-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS build
+FROM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS build
 WORKDIR /src/services/api
 COPY services/api/go.mod services/api/go.sum* ./
 COPY pkg/actioncatalog/go.mod /src/pkg/actioncatalog/go.mod
